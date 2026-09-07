@@ -1,0 +1,14 @@
+node_modules/
+coverage/
+dist/
+*.tgz
+*.tsbuildinfo
+*.log
+.env
+.DS_Store
+.vscode/
+.idea/
+.zed/
+.claude/
+.pi/
+docs/superpowers/plans/
