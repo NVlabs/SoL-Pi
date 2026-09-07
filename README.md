@@ -61,10 +61,16 @@ Install the tested Pi release:
 npm install --global @earendil-works/pi-coding-agent@0.84.2
 ```
 
-Then install SoL-Pi from this checkout:
+Then install SoL-Pi directly from [NVlabs/SoL-Pi](https://github.com/NVlabs/SoL-Pi):
 
 ```bash
-pi install /absolute/path/to/SoL-Pi
+pi install git:github.com/NVlabs/SoL-Pi
+```
+
+To install it only for the current project, use the project-local scope:
+
+```bash
+pi install git:github.com/NVlabs/SoL-Pi --local --approve
 ```
 
 ### Configure
