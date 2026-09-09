@@ -46,6 +46,10 @@ The mechanisms share four rules:
 - **Preserve evidence.** Original observations remain available locally, and reducer failures leave the original result unchanged.
 - **Use Pi's runtime choices.** Authentication, provider URLs, the main model, and shell behavior remain under Pi's control.
 
+## Technical Details and Core Insights
+
+Read the [SoL-Pi blog](https://nvlabs.github.io/SoL-Pi/) for a deeper look at the technical details, design rationale, and core insights behind SoL-Pi, including how auto-research led to the four efficiency mechanisms and how they work.
+
 ## Getting Started
 
 ### Requirements
