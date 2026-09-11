@@ -25,8 +25,9 @@ import type {
 	TurnStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { appendFile, mkdir } from "node:fs/promises";
 import { runtimeRoot } from "../../runtime-paths.ts";
-import { createLedger, type Ledger } from "../observation-pack/ledger.ts";
 import {
 	TrajectoryStore,
 	TrajectoryWidget,
@@ -90,13 +91,15 @@ function errorStopReason(message: AgentMessage): boolean {
 }
 
 class TrajectoryRecorder {
+	private readonly runId = randomUUID();
 	readonly store: TrajectoryStore;
-	private readonly ledger: Ledger;
+	private readonly directory: string;
+	private pending: string[] = [];
 	private writes = Promise.resolve();
 
 	constructor(root: string, maxRecords: number | undefined) {
 		this.store = new TrajectoryStore(maxRecords);
-		this.ledger = createLedger(join(root, "trajectory-inspector", "events.jsonl"));
+		this.directory = join(root, "trajectory-inspector");
 	}
 
 	record(input: TrajectoryRecordInput, timestamp = Date.now()): TrajectoryRecord {
@@ -112,7 +115,7 @@ class TrajectoryRecorder {
 		const record = this.store.update(sequence, update);
 		// Keep completion metadata in the durable stream even after a record has
 		// fallen out of the bounded UI tail.
-		this.enqueue({ event: "update", sequence, ...(record ?? {}), ...update });
+		this.enqueue({ event: "update", sequence, ...update, timestamp: Date.now() });
 		return record;
 	}
 
@@ -121,9 +124,19 @@ class TrajectoryRecorder {
 	}
 
 	private enqueue(entry: Record<string, unknown>): void {
+		this.pending.push(`${JSON.stringify({ schema: TRAJECTORY_EVENT_SCHEMA, runId: this.runId, ...entry })}\n`);
 		this.writes = this.writes
-			.then(() => this.ledger({ schema: TRAJECTORY_EVENT_SCHEMA, ...entry }))
+			.then(async () => {
+				if (this.pending.length === 0) return;
+				await mkdir(this.directory, { recursive: true });
+				while (this.pending.length > 0) {
+					const batch = this.pending.join("");
+					this.pending = [];
+					await appendFile(join(this.directory, "events.jsonl"), batch, "utf8");
+				}
+			})
 			.catch((error) => {
+				this.pending = [];
 				// Observability must never change the agent's behavior.
 				console.error(`[trajectory-inspector] ledger write failed: ${error instanceof Error ? error.message : String(error)}`);
 			});
@@ -203,6 +216,7 @@ export function createTrajectoryInspectorExtension(options: TrajectoryInspectorO
 		pi.registerCommand("trajectory", {
 			description: "Toggle the live agent trajectory widget",
 			handler: async (_args, context) => {
+				if (context.mode !== "tui") return;
 				const state = stateFor(context);
 				if (!state) return;
 				state.visible = !state.visible;
@@ -225,11 +239,12 @@ export function createTrajectoryInspectorExtension(options: TrajectoryInspectorO
 			state.request = undefined;
 			state.assistant = undefined;
 			state.compaction = undefined;
+			state.lastContext = undefined;
 			record(context, { kind: "session", label: `session ${event.reason}`, status: "info" });
 		});
 
 		pi.on("session_info_changed", (event: SessionInfoChangedEvent, context) => {
-			record(context, { kind: "session", label: event.name ? `session renamed · ${event.name}` : "session name cleared", status: "info" });
+			record(context, { kind: "session", label: event.name ? "session renamed" : "session name cleared", status: "info" });
 		});
 
 		pi.on("session_tree", (event: SessionTreeEvent, context) => {
@@ -237,11 +252,11 @@ export function createTrajectoryInspectorExtension(options: TrajectoryInspectorO
 		});
 
 		pi.on("agent_start", (_event, context) => {
-			record(context, { kind: "agent", label: "agent started", status: "running" });
+			record(context, { kind: "agent", label: "agent started", status: "info" });
 		});
 
 		pi.on("agent_end", (event: AgentEndEvent, context) => {
-			record(context, { kind: "agent", label: `agent ended · ${event.messages.length} messages`, status: "ok" });
+			record(context, { kind: "agent", label: `agent ended · ${event.messages.length} messages`, status: event.messages.some(errorStopReason) ? "error" : "ok" });
 		});
 
 		pi.on("agent_settled", (_event, context) => {
@@ -257,6 +272,13 @@ export function createTrajectoryInspectorExtension(options: TrajectoryInspectorO
 		pi.on("turn_end", (event: TurnEndEvent, context) => {
 			const state = stateFor(context);
 			const timestamp = Date.now();
+			// Transport failures can end a turn without after_provider_response.
+			update(context, state?.request?.sequence, {
+				status: errorStopReason(event.message) ? "error" : "info",
+				durationMs: durationSince(state?.request, timestamp),
+				detail: "ended without response metadata",
+			});
+			if (state) state.request = undefined;
 			update(context, state?.turn?.sequence, {
 				status: errorStopReason(event.message) ? "error" : "ok",
 				durationMs: durationSince(state?.turn, timestamp),
@@ -342,7 +364,7 @@ export function createTrajectoryInspectorExtension(options: TrajectoryInspectorO
 		});
 
 		pi.on("tool_result", (event: ToolResultEvent, context) => {
-			const bytes = event.content.reduce((total, block) => total + contentBytes(block), 0);
+			const bytes = contentBytes(event.content);
 			const state = stateFor(context);
 			record(context, {
 				kind: "result",
