@@ -1,0 +1,59 @@
+name: Update star history
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/star-history.yml
+      - scripts/update-star-history.mjs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: star-history
+  cancel-in-progress: false
+
+jobs:
+  update:
+    if: github.repository == 'NVlabs/SoL-Pi' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - name: Generate both themes from GitHub data
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/update-star-history.mjs "$GITHUB_REPOSITORY" "$RUNNER_TEMP/star-history"
+      - name: Publish generated files
+        shell: bash
+        run: |
+          if git ls-remote --exit-code --heads origin star-history; then
+            git fetch --depth=1 origin star-history
+            git switch -C star-history FETCH_HEAD
+          else
+            status=$?
+            if [ "$status" -ne 2 ]; then
+              exit "$status"
+            fi
+            git switch --orphan star-history
+          fi
+          for file in star-history-light.svg star-history-dark.svg star-history.json; do
+            cp "$RUNNER_TEMP/star-history/$file" "$file"
+          done
+          git add -- star-history-light.svg star-history-dark.svg star-history.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'docs: update star history'
+          git push origin HEAD:refs/heads/star-history
