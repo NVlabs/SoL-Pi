@@ -111,6 +111,7 @@ export class FakeSessionManager {
 export class FakePi {
 	readonly handlers = new Map<string, Handler[]>();
 	readonly registeredTools: ToolDefinition[] = [];
+	readonly registeredCommands: Array<{ name: string; options: unknown }> = [];
 	readonly sentMessages: Array<{
 		message: { customType: string; content: string; display: boolean; details?: unknown };
 		options: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" } | undefined;
@@ -129,6 +130,10 @@ export class FakePi {
 
 	registerTool(tool: ToolDefinition): void {
 		this.registeredTools.push(tool);
+	}
+
+	registerCommand(name: string, options: unknown): void {
+		this.registeredCommands.push({ name, options });
 	}
 
 	appendEntry(customType: string, data?: unknown): void {

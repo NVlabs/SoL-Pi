@@ -9,6 +9,7 @@ import { registerActionFusion } from "./extensions/action-fusion/index.ts";
 import { registerEvidencePreservingReducer } from "./extensions/evidence-preserving-reducer/index.ts";
 import { registerObservationPack } from "./extensions/observation-pack/index.ts";
 import { registerOnlineContextCompact } from "./extensions/online-context-compact/index.ts";
+import { registerTrajectoryInspector } from "./extensions/trajectory-inspector/index.ts";
 
 export function registerConfiguredFeatures(pi: ExtensionAPI, config: SolPiConfig): void {
 	if (config.actionFusion) registerActionFusion(pi);
@@ -20,6 +21,7 @@ export function registerConfiguredFeatures(pi: ExtensionAPI, config: SolPiConfig
 		});
 	}
 	if (config.onlineContextCompact) registerOnlineContextCompact(pi, config.cacheWriteReadRatio);
+	if (config.trajectoryInspector) registerTrajectoryInspector(pi);
 }
 
 export type SolPiConfigLoader = (ctx: ExtensionContext) => SolPiConfig;

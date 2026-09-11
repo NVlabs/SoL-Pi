@@ -23,6 +23,7 @@ The project file replaces the global file. SoL-Pi does not merge them.
   "evidencePreservingReducerProvider": "provider-id",
   "evidencePreservingReducerModel": "model-id",
   "onlineContextCompact": false,
+  "trajectoryInspector": false,
   "cacheWriteReadRatio": 12.5
 }
 ```
@@ -47,9 +48,12 @@ This preflight does not make every valid SoL-Pi configuration all-enabled. Witho
 - `evidencePreservingReducerProvider`: provider namespace used to resolve the reducer model through Pi's model registry.
 - `evidencePreservingReducerModel`: model id used for Evidence-Preserving Reducer.
 - `onlineContextCompact`: registers `update_plan` and boundary-driven native compaction after the other SoL-Pi context transformers.
+- `trajectoryInspector`: records a bounded metadata-only execution trajectory and shows a live TUI widget when TUI mode is active.
 - `cacheWriteReadRatio`: supplies the single economic decision ratio used by Online Context Compact.
 
 `obs_recall` accepts the original `id` and optional byte `offset` paging arguments. Its optional `query` adds case-sensitive literal UTF-8 byte search; it accepts whitespace, NUL, and multiline text, but rejects empty, malformed-Unicode, or over-256-byte queries. Search offsets are inclusive match starts, matches overlap, and returned spans use 0-based byte offsets with exclusive ends. Line numbers are LF-based and 1-based (a LF belongs to the line it ends). Each result has a UTF-8-safe bounded context and `next_offset`; continue until `eof` is true. Search returns at most 20 matches and is also constrained by the existing 16 KiB/400-line result limit. A cap can require one further empty continuation to establish EOF. To avoid a persistent line index, an arbitrary search offset rescans its prefix; this trades linear local I/O for bounded memory.
+
+Trajectory Inspector registers the `/trajectory` command. In TUI mode it shows the most recent execution records above the editor and follows new events as they arrive. Records are also appended to `<session-directory>/sol-pi/<session-id>/trajectory-inspector/events.jsonl` for local inspection. Only metadata is stored: event kind, timestamp, status, model/tool identifiers, byte counts, durations, and correlation ids. Prompts, assistant text, tool arguments, and tool output are intentionally omitted. The inspector is observational and does not modify provider requests or agent decisions.
 
 ## Evidence-Preserving Reducer runtime inputs
 

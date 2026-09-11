@@ -6,5 +6,6 @@
 	"evidencePreservingReducerProvider": "provider-id",
 	"evidencePreservingReducerModel": "model-id",
 	"onlineContextCompact": false,
+	"trajectoryInspector": false,
 	"cacheWriteReadRatio": 12.5
 }
