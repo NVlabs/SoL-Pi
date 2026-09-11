@@ -118,26 +118,32 @@ describe("action fusion then_run", () => {
 		expect(edit.name).toBe("edit");
 	});
 
-	it("renders a fused mutation as an English lightning savings call", () => {
+	it.each([
+		{ label: "default checkout name", cwd: join(tmpdir(), "SoL-Pi"), path: "target.ts" },
+		{ label: "unrelated checkout name", cwd: join(tmpdir(), "plain-checkout"), path: "target.ts" },
+		{ label: "repository name in the target path", cwd: join(tmpdir(), "plain-checkout"), path: "SoL-Pi/target.ts" },
+	])("renders a fused mutation as an English lightning savings call ($label)", ({ cwd, path }) => {
 		const { write } = loadFusedTools();
 		const fusedArgs = {
-			path: "target.ts",
+			path,
 			content: "export {};\n",
 			then_run: { command: "npm test" },
 		};
 		const fused = write.renderCall!(fusedArgs, plainTheme, {
-			cwd: process.cwd(),
+			cwd,
 			args: fusedArgs,
 		} as never);
-		const plainArgs = { path: "target.ts", content: "export {};\n" };
+		const plainArgs = { path, content: "export {};\n" };
 		const plain = write.renderCall!(plainArgs, plainTheme, {
-			cwd: process.cwd(),
+			cwd,
 			args: plainArgs,
 		} as never);
 
 		expect(componentText(fused)).toContain("⚡ SoL-Pi · Action Fusion");
 		expect(componentText(fused)).toContain("Money saved · 1 model round-trip avoided");
-		expect(componentText(plain)).not.toContain("SoL-Pi");
+		// A normal path or its OSC 8 hyperlink may contain the repository name.
+		expect(componentText(plain)).not.toContain("⚡ SoL-Pi · Action Fusion");
+		expect(componentText(plain)).not.toContain("Money saved · 1 model round-trip avoided");
 	});
 
 	it("runs write then_run through bash after the written content is visible", async () => {
