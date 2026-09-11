@@ -28,6 +28,7 @@ import type {
 import { runtimeRoot } from "../../runtime-paths.ts";
 import { formatSavingsBytes, showSolPiSavings } from "../../tui.ts";
 import { archiveBody, archiveRoot } from "./archive.ts";
+import { ReceiptCache } from "./cache.ts";
 import { reducibleToolResult } from "./candidate.ts";
 import {
 	DIAGNOSTIC_COMMAND,
@@ -41,7 +42,7 @@ import {
 } from "./config.ts";
 import { createJournal, type Journal } from "./journal.ts";
 import { callReducer, type ProviderResult } from "./provider.ts";
-import { receiptText, validateReceipt } from "./receipt.ts";
+import { receiptText, reducerInstructions, validateReceipt } from "./receipt.ts";
 
 export interface ReducedToolResult {
 	readonly content: ToolResultEvent["content"];
@@ -60,6 +61,7 @@ export async function reduceToolResult(
 	config: ReducerConfig,
 	event: ToolResultEvent,
 	context: ExtensionContext,
+	cache?: ReceiptCache,
 ): Promise<ReducedToolResult | undefined> {
 	const reducible = await reducibleToolResult(event);
 	if (!reducible || !DIAGNOSTIC_COMMAND.test(reducible.command)) return undefined;
@@ -85,9 +87,21 @@ export async function reduceToolResult(
 		sourcePath: archive.path,
 	});
 
+	const cacheKey = sha256(JSON.stringify([
+		config.storeRoot,
+		archive.hash,
+		command,
+		event.isError,
+		config.reducerProvider,
+		config.reducerModel,
+		config.maxOutputTokens,
+		REDUCER_RECEIPT_SCHEMA,
+		reducerInstructions(),
+	]));
+	const cached = cache?.get(cacheKey);
 	let provider: ProviderResult;
 	try {
-		provider = await callReducer(config, command, event.isError, archive, body, context);
+		provider = cached ?? (await callReducer(config, command, event.isError, archive, body, context));
 	} catch (error) {
 		const name = errorName(error);
 		journal("fallback", {
@@ -103,7 +117,7 @@ export async function reduceToolResult(
 		return undefined;
 	}
 
-	journal("provider_response", {
+	journal(cached ? "cache_hit" : "provider_response", {
 		toolCallId: event.toolCallId,
 		sourceSha256: archive.hash,
 		provider: provider.provider,
@@ -125,6 +139,7 @@ export async function reduceToolResult(
 
 	const checked = validateReceipt(provider.outputText, archive, body, event.isError);
 	if (!checked.ok) {
+		cache?.delete(cacheKey);
 		journal("fallback", {
 			toolCallId: event.toolCallId,
 			sourceSha256: archive.hash,
@@ -136,6 +151,7 @@ export async function reduceToolResult(
 	const receipt = receiptText(command, archive, checked.value, provider);
 	const receiptBytes = Buffer.byteLength(receipt, "utf8");
 	if (receiptBytes >= archive.bytes) {
+		cache?.delete(cacheKey);
 		journal("fallback", {
 			toolCallId: event.toolCallId,
 			sourceSha256: archive.hash,
@@ -146,6 +162,7 @@ export async function reduceToolResult(
 		});
 		return undefined;
 	}
+	if (!cached) cache?.set(cacheKey, provider);
 	journal("applied", {
 		toolCallId: event.toolCallId,
 		commandSha256: sha256(command),
@@ -155,6 +172,7 @@ export async function reduceToolResult(
 		receiptBytes,
 		evidenceCount: checked.value.evidence.length,
 		uncertain: checked.value.uncertain,
+		cacheHit: cached !== undefined,
 		usage: provider.usage,
 	});
 	showSolPiSavings(context, "Luna Delegating", formatSavingsBytes(archive.bytes - receiptBytes));
@@ -178,7 +196,7 @@ export async function reduceToolResult(
 
 export function createEvidencePreservingReducerExtension(options: EvidencePreservingReducerOptions = {}): ExtensionFactory {
 	return (pi: ExtensionAPI) => {
-		const states = new Map<string, { config: ReducerConfig; journal: Journal }>();
+		const states = new Map<string, { config: ReducerConfig; journal: Journal; cache: ReceiptCache }>();
 		pi.on("tool_result", (event, context) => {
 			let root: string;
 			try {
@@ -189,10 +207,10 @@ export function createEvidencePreservingReducerExtension(options: EvidencePreser
 			let state = states.get(root);
 			if (!state) {
 				const config = loadReducerConfig(root, options);
-				state = { config, journal: createJournal(pi, config) };
+				state = { config, journal: createJournal(pi, config), cache: new ReceiptCache() };
 				states.set(root, state);
 			}
-			return reduceToolResult(state.journal, state.config, event, context);
+			return reduceToolResult(state.journal, state.config, event, context, state.cache);
 		});
 	};
 }
