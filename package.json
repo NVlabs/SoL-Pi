@@ -9,6 +9,7 @@
 		"assets",
 		"docs/compatibility.md",
 		"docs/configuration.md",
+		"scripts/compare-observation-search.mjs",
 		"scripts/check-sol-pi-config.mjs",
 		"agents-install.md",
 		"README.md",

@@ -116,6 +116,8 @@ ObservationPack and Evidence-Preserving Reducer store session-specific archives 
 
 They archive eligible source material in this directory. The archived copies remain local and are not automatically deleted when the Pi session ends.
 
+`obs_recall` pages an archive when called with `id` and `offset`. Supplying a non-empty, well-formed Unicode `query` (at most 256 UTF-8 bytes) performs a case-sensitive literal byte search instead. Search results provide byte spans, LF-based line numbers, and UTF-8-safe bounded context. Use the returned `next_offset` to continue; results are capped at 20 matches and the normal 16 KiB/400-line tool-result limit, so a capped final page can require one empty continuation to confirm `eof`. Search rescans the archive prefix to recover a line number and deliberately keeps no persistent index.
+
 Online Context Compact stores its state in Pi's session log. After a successful compaction, it starts a new turn and automatically continues the active task. Cancelling the run or exiting Pi does not trigger automatic continuation.
 
 Evidence-Preserving Reducer may send eligible diagnostic-log content to its configured reducer model using Pi-managed authentication. Review [SECURITY.md](SECURITY.md) before enabling it. Do not enable remote reduction for logs that must remain local.
@@ -138,6 +140,7 @@ npm ci --ignore-scripts
 npm run check
 npm audit --audit-level=high
 node scripts/check-pi-compat.mjs
+node --experimental-strip-types scripts/compare-observation-search.mjs --out /absolute/path/observation-search.json
 ```
 
 `npm run check` covers TypeScript, the complete test suite, and package inspection. The development dependency set is pinned to Pi 0.84.2; runtime Pi packages remain peer dependencies so Pi owns their installation and upgrades.
