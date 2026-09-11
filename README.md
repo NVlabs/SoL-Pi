@@ -155,3 +155,13 @@ SoL-Pi builds on the public extension interfaces provided by [Pi](https://github
 ## License
 
 SoL-Pi is released under the [MIT License](LICENSE).
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=NVlabs%2FSoL-Pi&amp;type=date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=NVlabs/SoL-Pi&amp;type=date&amp;theme=dark&amp;legend=top-left" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=NVlabs/SoL-Pi&amp;type=date&amp;legend=top-left" />
+    <img alt="SoL-Pi star history chart" src="https://api.star-history.com/chart?repos=NVlabs/SoL-Pi&amp;type=date&amp;legend=top-left" width="100%" />
+  </picture>
+</a>
