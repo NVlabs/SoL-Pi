@@ -1,6 +1,6 @@
 # Pi Compatibility
 
-SoL-Pi is developed and tested against `@earendil-works/pi-coding-agent` 0.84.2. Its public API surface is also type-checked and exercised against Pi 0.81.1, the base used by the original Pi fork. The runtime range is deliberately expressed as a peer dependency because Pi owns installation and upgrade of its packages.
+SoL-Pi is developed and tested against `@earendil-works/pi-coding-agent` 0.84.2. Its public API surface is also type-checked and exercised against Pi 0.81.1, the base used by the original Pi fork. The runtime range is deliberately expressed as a peer dependency because Pi owns installation and upgrade of its packages; the declared floor is 0.81.1, the lowest exercised release, because earlier Pi versions predate the `@earendil-works/pi-ai/compat` export and the `agent_settled` and `sessionEntryToContextMessages` APIs SoL-Pi imports.
 
 SoL-Pi imports only public package exports:
 
