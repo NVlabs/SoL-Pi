@@ -160,8 +160,10 @@ SoL-Pi is released under the [MIT License](LICENSE).
 
 <a href="https://www.star-history.com/?repos=NVlabs%2FSoL-Pi&amp;type=date">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=NVlabs/SoL-Pi&amp;type=date&amp;theme=dark&amp;legend=top-left" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=NVlabs/SoL-Pi&amp;type=date&amp;legend=top-left" />
-    <img alt="SoL-Pi star history chart" src="https://api.star-history.com/chart?repos=NVlabs/SoL-Pi&amp;type=date&amp;legend=top-left" width="100%" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NVlabs/SoL-Pi/star-history/star-history-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/NVlabs/SoL-Pi/star-history/star-history-light.svg" />
+    <img alt="SoL-Pi star history chart" src="https://raw.githubusercontent.com/NVlabs/SoL-Pi/star-history/star-history-light.svg" width="100%" />
   </picture>
 </a>
+
+Updated hourly from GitHub data. See [chart details and manual refresh](https://github.com/NVlabs/SoL-Pi/blob/main/docs/star-history.md).
