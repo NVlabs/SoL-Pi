@@ -165,5 +165,3 @@ SoL-Pi is released under the [MIT License](LICENSE).
     <img alt="SoL-Pi star history chart" src="https://raw.githubusercontent.com/NVlabs/SoL-Pi/star-history/star-history-light.svg" width="100%" />
   </picture>
 </a>
-
-Updated hourly from GitHub data. See [chart details and manual refresh](https://github.com/NVlabs/SoL-Pi/blob/main/docs/star-history.md).

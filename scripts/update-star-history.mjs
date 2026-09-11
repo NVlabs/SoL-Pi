@@ -3,14 +3,12 @@
  * SPDX-License-Identifier: MIT
  */
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const DAY = 86_400_000;
-const escape = (value) => String(value).replace(/[&<>"']/g, (char) => ({
-	"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;",
-})[char]);
 const isCount = (value) => Number.isSafeInteger(value) && value >= 0;
 
 export async function fetchStarHistory(repository, { token, fetcher = fetch } = {}) {
@@ -68,55 +66,43 @@ export function toDailyPoints({ weeks, fetchedAt }) {
 	return [{ time: active[0].time - DAY, stars: 0 }, ...active];
 }
 
-export function renderStarHistory(snapshot, theme) {
-	const points = toDailyPoints(snapshot);
-	const dark = theme === "dark";
-	const colors = dark
-		? { background: "#0d1117", text: "#f0f6fc", muted: "#9198a1", grid: "#30363d", line: "#9bd43c" }
-		: { background: "#ffffff", text: "#1f2328", muted: "#59636e", grid: "#d1d9e0", line: "#608f00" };
-	const left = 80, right = 854, top = 120, bottom = 350;
-	const end = points.at(-1);
-	const maximum = Math.max(5, end.stars);
-	const magnitude = 10 ** Math.floor(Math.log10(maximum / 5));
-	const step = Math.ceil(maximum / 5 / magnitude) * magnitude;
-	const ceiling = Math.ceil(maximum / step) * step;
-	const x = (time) => left + (time - points[0].time) / (end.time - points[0].time) * (right - left);
-	const y = (stars) => bottom - stars / ceiling * (bottom - top);
-	const path = points.map((point, i) => `${i ? "L" : "M"}${x(point.time).toFixed(2)},${y(point.stars).toFixed(2)}`).join(" ");
-	const formatDate = (time) => new Date(time).toISOString().slice(0, 10);
-	const title = `${snapshot.repository} star history`;
-	const updated = snapshot.fetchedAt.slice(0, 16).replace("T", " ");
-	const elements = [
-		`<svg xmlns="http://www.w3.org/2000/svg" width="900" height="460" viewBox="0 0 900 460" role="img" aria-labelledby="title description">`,
-		`<title id="title">${escape(title)}</title>`,
-		`<desc id="description">${snapshot.currentStars} current stars. Historical line sums daily star additions reported by GitHub. Updated ${updated} UTC.</desc>`,
-		`<rect width="900" height="460" rx="12" fill="${colors.background}"/>`,
-		`<g font-family="Arial, Helvetica, sans-serif" fill="${colors.text}">`,
-		`<text x="36" y="42" font-size="24" font-weight="700">Star history</text>`,
-		`<text x="36" y="68" font-size="15" fill="${colors.muted}">${escape(snapshot.repository)}</text>`,
-		`<text x="864" y="42" text-anchor="end" font-size="24" font-weight="700">${snapshot.currentStars.toLocaleString("en-US")} stars</text>`,
-		`<text x="864" y="68" text-anchor="end" font-size="13" fill="${colors.muted}">Current total</text>`,
-		`<text x="${left}" y="104" font-size="12" fill="${colors.muted}">Cumulative daily star additions</text>`,
-	];
-	for (let stars = 0; stars <= ceiling; stars += step) {
-		elements.push(`<path d="M${left},${y(stars)} H${right}" stroke="${colors.grid}" stroke-width="1"/>`,
-			`<text x="${left - 12}" y="${y(stars) + 4}" text-anchor="end" font-size="12" fill="${colors.muted}">${stars.toLocaleString("en-US")}</text>`);
+export async function renderStarHistory(snapshot, theme) {
+	const renderer = process.env.STAR_HISTORY_RENDERER;
+	if (!renderer) throw new Error("STAR_HISTORY_RENDERER must point to the pinned Star History checkout");
+	const require = createRequire(resolve(renderer, "backend/package.json"));
+	const { JSDOM } = require("jsdom");
+	const { optimize } = require("svgo");
+	const { default: XYChart } = await import(pathToFileURL(resolve(renderer, "shared/packages/xy-chart.tsx")).href);
+	const { fixJsdomSvgCasing } = await import(pathToFileURL(resolve(renderer, "backend/utils.ts")).href);
+	const dom = new JSDOM("<!doctype html><body></body>");
+	try {
+		const svg = dom.window.document.createElement("svg");
+		dom.window.document.body.append(svg);
+		svg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+		svg.setAttribute("width", "800");
+		XYChart(svg, {
+			title: "Star History", xLabel: "Date", yLabel: "GitHub Stars",
+			showDots: false, transparent: false, theme,
+			data: { datasets: [{
+				label: snapshot.repository.toLowerCase(), logo: snapshot.logo || "",
+				data: toDailyPoints(snapshot).map(({ time, stars }) => ({ x: new Date(time), y: stars })),
+			}] },
+		}, { xTickLabelType: "Date", chartWidth: 800, legendPosition: "top-left" });
+		// Preserve the original chart layout; the timestamp is the only addition.
+		const height = Number(svg.getAttribute("height"));
+		const updated = dom.window.document.createElementNS("http://www.w3.org/2000/svg", "text");
+		updated.setAttribute("x", "790");
+		updated.setAttribute("y", String(height + 14));
+		updated.setAttribute("text-anchor", "end");
+		updated.setAttribute("style", `font: 10px Arial, sans-serif; fill: ${theme === "dark" ? "#9198a1" : "#656d76"}`);
+		updated.textContent = `Updated ${snapshot.fetchedAt.slice(0, 16).replace("T", " ")} UTC`;
+		svg.append(updated);
+		svg.setAttribute("height", String(height + 22));
+		svg.setAttribute("viewBox", `0 0 800 ${height + 22}`);
+		return `${optimize(fixJsdomSvgCasing(svg.outerHTML), { multipass: true }).data}\n`;
+	} finally {
+		dom.window.close();
 	}
-	const ticks = Math.min(4, Math.round((end.time - points[0].time) / DAY));
-	for (let i = 0; i <= ticks; i++) {
-		const time = points[0].time + Math.round((end.time - points[0].time) / DAY * i / ticks) * DAY;
-		elements.push(`<text x="${x(time)}" y="377" text-anchor="middle" font-size="12" fill="${colors.muted}">${formatDate(time)}</text>`);
-	}
-	elements.push(
-		`<path d="${path} L${right},${bottom} L${left},${bottom} Z" fill="${colors.line}" fill-opacity="0.10"/>`,
-		`<path d="${path}" fill="none" stroke="${colors.line}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`,
-		`<circle cx="${x(end.time)}" cy="${y(end.stars)}" r="4" fill="${colors.line}"/>`,
-		`<text x="36" y="415" font-size="12" fill="${colors.muted}">Source: GitHub API · Scheduled hourly</text>`,
-		`<text x="864" y="415" text-anchor="end" font-size="12" fill="${colors.muted}">Updated ${updated} UTC</text>`,
-		`<text x="36" y="439" font-size="11" fill="${colors.muted}">Current total excludes removed stars; daily history follows GitHub’s reporting boundaries.</text>`,
-		"</g></svg>\n",
-	);
-	return elements.join("\n");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
@@ -124,10 +110,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
 		const [repository = process.env.GITHUB_REPOSITORY, directory] = process.argv.slice(2);
 		if (!repository || !directory) throw new Error("Usage: node scripts/update-star-history.mjs owner/repository output-directory");
 		const snapshot = await fetchStarHistory(repository, { token: process.env.GITHUB_TOKEN });
+		const logo = await fetch(`https://github.com/${repository.split("/")[0]}.png?size=22`, {
+			signal: AbortSignal.timeout(30_000),
+		});
+		if (!logo.ok) throw new Error(`GitHub avatar: HTTP ${logo.status}`);
+		snapshot.logo = `data:${logo.headers.get("content-type")};base64,${Buffer.from(await logo.arrayBuffer()).toString("base64")}`;
 		const files = {
-			"star-history-light.svg": renderStarHistory(snapshot, "light"),
-			"star-history-dark.svg": renderStarHistory(snapshot, "dark"),
+			"star-history-light.svg": await renderStarHistory(snapshot, "light"),
+			"star-history-dark.svg": await renderStarHistory(snapshot, "dark"),
 			"star-history.json": `${JSON.stringify(snapshot, null, 2)}\n`,
+			"LICENSE-star-history.txt": await readFile(resolve(process.env.STAR_HISTORY_RENDERER, "LICENSE"), "utf8"),
 		};
 		await mkdir(directory, { recursive: true });
 		for (const [name, contents] of Object.entries(files)) await writeFile(resolve(directory, name), contents);
