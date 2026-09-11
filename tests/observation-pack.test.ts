@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -172,6 +172,18 @@ describe("observation pack", () => {
 		expect(await readFile(join(sessionDir, "sol-pi", "session-b", "observation-pack", "objects", `${id}.txt`), "utf8")).toBe(body);
 	});
 
+	it("does not search an observation stored only in another session", async () => {
+		const sessionDir = await sessionRoot();
+		const message = toolResult(`session-only\n${repeatPastThreshold("isolated bytes\n")}`);
+		const id = observationId(message);
+		const pi = observationPackPi();
+		const contextA = fakeContext(new FakeSessionManager([], "session-a", sessionDir));
+		const contextB = fakeContext(new FakeSessionManager([], "session-b", sessionDir));
+		await project(pi, message, sessionDir, 3);
+		await expect(pi.tool("obs_recall").execute("session-b", { id, query: "session-only" }, undefined, undefined, contextB)).rejects.toThrow("Unknown observation id");
+		await expect(pi.tool("obs_recall").execute("session-a", { id, query: "session-only" }, undefined, undefined, contextA)).resolves.toBeTruthy();
+	});
+
 	it("breaks the prefix once per observation without remutating older placeholders", async () => {
 		const sessionDir = await sessionRoot();
 		const pi = observationPackPi();
@@ -210,6 +222,8 @@ describe("observation pack", () => {
 
 		expect(recalled).toMatch(/durable observation/u);
 		expect(recalled).toMatch(/recall line/u);
+		const search = await resumed.tool("obs_recall").execute("search-after-restart", { id, query: "durable" }, undefined, undefined, fakeContext(sessionDir));
+		expect((search.details as { matches: unknown[] }).matches).toHaveLength(1);
 	});
 
 	it("fails storage closed when a same-size object holds different content", async () => {
@@ -253,9 +267,20 @@ describe("observation pack", () => {
 		await rm(path);
 		await symlink(target, path);
 
-		await expect(
-			pi.tool("obs_recall").execute("recall-1", { id, offset: 0 }, undefined, undefined, fakeContext(sessionDir)),
-		).rejects.toMatchObject({ code: "ELOOP" });
+		for (const args of [{ id, offset: 0 }, { id, query: "stored" }]) {
+			await expect(pi.tool("obs_recall").execute("recall-1", args, undefined, undefined, fakeContext(sessionDir))).rejects.toMatchObject({ code: "ELOOP" });
+		}
+	});
+
+	it("rejects a directory substituted for a searched object", async () => {
+		const sessionDir = await sessionRoot();
+		const message = toolResult(`stored\n${repeatPastThreshold("object bytes\n")}`);
+		const id = observationId(message);
+		const pi = observationPackPi();
+		await project(pi, message, sessionDir, 3);
+		await rm(observationPath(sessionDir, id));
+		await mkdir(observationPath(sessionDir, id));
+		await expect(pi.tool("obs_recall").execute("directory", { id, query: "stored" }, undefined, undefined, fakeContext(sessionDir))).rejects.toThrow("not a regular file");
 	});
 
 	it("returns the exact original bytes across paged recall", async () => {
@@ -283,6 +308,153 @@ describe("observation pack", () => {
 
 		expect(recalled).toBe(body);
 		expect(Buffer.from(recalled, "utf8")).toEqual(Buffer.from(body, "utf8"));
+	});
+
+	it("searches archived literal bytes with exact spans, UTF-8 contexts, and overlapping matches", async () => {
+		const sessionDir = await sessionRoot();
+		const source = `start\nbanana\ncase Needle needle\nNUL:\0needle\n${"a".repeat(4094)}☾needle\n`;
+		const message = toolResult(`${source}${"padding without hits\n".repeat(700)}`);
+		const id = observationId(message);
+		const pi = observationPackPi();
+		await project(pi, message, sessionDir, 3);
+		const recall = pi.tool("obs_recall");
+
+		const overlap = await recall.execute("search-1", { id, query: "ana" }, undefined, undefined, fakeContext(sessionDir));
+		const overlapDetails = overlap.details as { matches: Array<{ byteOffset: number; byteEnd: number; line: number; context: string }> };
+		expect(overlapDetails.matches.map((match) => match.byteOffset)).toEqual([Buffer.byteLength("start\nb", "utf8"), Buffer.byteLength("start\nban", "utf8")]);
+		expect(overlapDetails.matches.map((match) => match.byteEnd - match.byteOffset)).toEqual([3, 3]);
+		expect(overlapDetails.matches.every((match) => match.line === 2 && match.context.includes("banana"))).toBe(true);
+
+		const nul = await recall.execute("search-2", { id, query: "\0needle" }, undefined, undefined, fakeContext(sessionDir));
+		const nulText = nul.content[0]?.type === "text" ? nul.content[0].text : "";
+		expect(nulText).toContain('"context":"');
+		expect(nulText).toContain("\\u0000needle");
+		expect(Buffer.byteLength(nulText, "utf8")).toBeLessThanOrEqual(16 * 1024);
+		const utf8 = await recall.execute("search-3", { id, query: "☾n" }, undefined, undefined, fakeContext(sessionDir));
+		const utf8Details = utf8.details as { matches: Array<{ byteOffset: number; byteEnd: number; context: string }> };
+		expect(utf8Details.matches).toHaveLength(1);
+		expect(utf8Details.matches[0]?.byteOffset).toBe(Buffer.byteLength(source.slice(0, source.indexOf("☾n")), "utf8"));
+		expect(utf8Details.matches[0]?.context).toContain("☾needle");
+	});
+
+	it("trims 2, 3, and 4-byte UTF-8 characters cut by the fixed context end", async () => {
+		const sessionDir = await sessionRoot();
+		const cases = ["é", "漢", "🙂"];
+		const source = `${cases.map((character, index) => `${"x".repeat(300)}match-${index}${"a".repeat(255)}${character}tail`).join("\n")}\n${"padding\n".repeat(2_000)}`;
+		const message = toolResult(source);
+		const id = observationId(message);
+		const pi = observationPackPi();
+		await project(pi, message, sessionDir, 3);
+		for (const [index] of cases.entries()) {
+			const result = await pi.tool("obs_recall").execute("context-boundary", { id, query: `match-${index}` }, undefined, undefined, fakeContext(sessionDir));
+			const match = (result.details as { matches: Array<{ context: string; contextStart: number; contextEnd: number }> }).matches[0];
+			expect(match).toBeTruthy();
+			const expected = Buffer.from(source).subarray(match!.contextStart, match!.contextEnd);
+			expect(Buffer.from(match!.context, "utf8")).toEqual(expected);
+			expect(match!.contextEnd - match!.contextStart).toBe(Buffer.byteLength(match!.context, "utf8"));
+			expect(match!.context).not.toContain("�");
+		}
+	});
+
+	it("continues capped searches without skipped or duplicate match starts", async () => {
+		const sessionDir = await sessionRoot();
+		const source = `${"needle|".repeat(25)}${"filler\n".repeat(2_000)}`;
+		const message = toolResult(source);
+		const id = observationId(message);
+		const pi = observationPackPi();
+		await project(pi, message, sessionDir, 3);
+		const recall = pi.tool("obs_recall");
+		let offset = 0;
+		const starts: number[] = [];
+		for (;;) {
+			const result = await recall.execute("search-cap", { id, query: "needle", offset }, undefined, undefined, fakeContext(sessionDir));
+			const details = result.details as { matches: Array<{ byteOffset: number }>; nextOffset: number; eof: boolean };
+			starts.push(...details.matches.map((match) => match.byteOffset));
+			offset = details.nextOffset;
+			if (details.eof) break;
+		}
+		expect(starts).toEqual(Array.from({ length: 25 }, (_, index) => index * Buffer.byteLength("needle|", "utf8")));
+	});
+
+	it("stops before JSON-escaped contexts exceed the result byte limit", async () => {
+		const sessionDir = await sessionRoot();
+		const source = `${(`${"\0".repeat(256)}needle${"\0".repeat(256)}|`).repeat(20)}${"filler\n".repeat(2_000)}`;
+		const message = toolResult(source);
+		const id = observationId(message);
+		const pi = observationPackPi();
+		await project(pi, message, sessionDir, 3);
+		const result = await pi.tool("obs_recall").execute("escaped", { id, query: "needle" }, undefined, undefined, fakeContext(sessionDir));
+		const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+		const details = result.details as { matches: unknown[]; eof: boolean };
+		expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(16 * 1024);
+		expect(details.matches.length).toBeGreaterThan(0);
+		expect(details.matches.length).toBeLessThan(20);
+		expect(details.eof).toBe(false);
+	});
+
+	it("rejects invalid search arguments and honors an already aborted search", async () => {
+		const sessionDir = await sessionRoot();
+		const message = toolResult(`${"searchable\n".repeat(2_000)}`);
+		const id = observationId(message);
+		const pi = observationPackPi();
+		await project(pi, message, sessionDir, 3);
+		const recall = pi.tool("obs_recall");
+		const context = fakeContext(sessionDir);
+		await expect(recall.execute("bad", { id, query: "" }, undefined, undefined, context)).rejects.toThrow("must not be empty");
+		await expect(recall.execute("bad", { id, query: String.fromCharCode(0xd800) }, undefined, undefined, context)).rejects.toThrow("well-formed");
+		await expect(recall.execute("bad", { id, query: "x".repeat(257) }, undefined, undefined, context)).rejects.toThrow("256 UTF-8");
+		await expect(recall.execute("bad", { id, query: "x", offset: Number.MAX_SAFE_INTEGER + 1 }, undefined, undefined, context)).rejects.toThrow("safe integer");
+		await expect(recall.execute("bad", { id: "obs_0123456789abcdef01234567", query: "x" }, undefined, undefined, context)).rejects.toThrow("Unknown observation id");
+		const end = Buffer.byteLength(message.content[0]?.type === "text" ? message.content[0].text : "", "utf8");
+		const miss = await recall.execute("miss", { id, query: "absent", offset: end }, undefined, undefined, context);
+		expect(miss.details).toMatchObject({ matches: [], nextOffset: end, eof: true });
+		const exact256 = await recall.execute("exact", { id, query: "é".repeat(128) }, undefined, undefined, context);
+		expect(exact256.details).toMatchObject({ matches: [], eof: true });
+		const multiline = await recall.execute("multiline", { id, query: "searchable\nsearchable" }, undefined, undefined, context);
+		expect((multiline.details as { matches: unknown[] }).matches.length).toBeGreaterThan(0);
+		const controller = new AbortController();
+		controller.abort();
+		await expect(recall.execute("abort", { id, query: "searchable" }, controller.signal, undefined, context)).rejects.toThrow("aborted");
+	});
+
+	it("accumulates short archive reads and stops when cancellation arrives during a prefix rescan", async () => {
+		const sessionDir = await sessionRoot();
+		const source = `prefix\n${"short read payload\n".repeat(2_000)}needle\n`;
+		const message = toolResult(source);
+		const id = observationId(message);
+		const pi = observationPackPi();
+		await project(pi, message, sessionDir, 3);
+		const probe = await open(observationPath(sessionDir, id), "r");
+		const prototype = Object.getPrototypeOf(probe) as { read: (...args: any[]) => Promise<{ bytesRead: number }> };
+		await probe.close();
+		const originalRead = prototype.read;
+		const readSpy = vi.spyOn(prototype, "read").mockImplementation(function (this: unknown, buffer: Buffer, bufferOffset: number, length: number, position: number) {
+			return originalRead.call(this, buffer, bufferOffset, Math.min(length, 7), position);
+		});
+		const recall = pi.tool("obs_recall");
+		const shortRead = await recall.execute("short", { id, query: "needle" }, undefined, undefined, fakeContext(sessionDir));
+		expect((shortRead.details as { matches: unknown[] }).matches).toHaveLength(1);
+
+		const controller = new AbortController();
+		let calls = 0;
+		readSpy.mockImplementation(function (this: unknown, buffer: Buffer, bufferOffset: number, length: number, position: number) {
+			calls += 1;
+			return originalRead.call(this, buffer, bufferOffset, length, position).then((result) => {
+				if (calls === 1) controller.abort();
+				return result;
+			});
+		});
+		await expect(recall.execute("during", { id, query: "needle", offset: 8_000 }, controller.signal, undefined, fakeContext(sessionDir))).rejects.toThrow("aborted");
+		const scanController = new AbortController();
+		calls = 0;
+		readSpy.mockImplementation(function (this: unknown, buffer: Buffer, bufferOffset: number, length: number, position: number) {
+			calls += 1;
+			return originalRead.call(this, buffer, bufferOffset, length, position).then((result) => {
+				if (calls === 1) scanController.abort();
+				return result;
+			});
+		});
+		await expect(recall.execute("scan", { id, query: "missing" }, scanController.signal, undefined, fakeContext(sessionDir))).rejects.toThrow("aborted");
 	});
 
 	it("fails storage closed when the observation directory is a symlink", async () => {
