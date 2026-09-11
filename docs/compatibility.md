@@ -60,6 +60,13 @@ support. The renderer therefore changes only the interactive terminal display;
 it does not change session messages, provider requests, tool results, JSON
 events, print output, or RPC UI requests.
 
+The optional Trajectory Inspector uses the same public extension hooks for
+session, turn, context, provider, assistant, tool, compaction, model, and
+shutdown events, plus `ctx.ui.setWidget()`. It renders a bounded live tail in
+the TUI and appends metadata-only JSONL records under the session directory.
+Prompts, assistant text, tool arguments, and tool results are intentionally
+omitted, and the inspector does not mutate context or provider requests.
+
 ## Test doubles
 
 The test suite drives every extension through the same public `ExtensionAPI` and `ExtensionContext` surface Pi provides, over a real public `SessionManager`, with no provider registered. That keeps the suite zero-spend and independent of the deleted Pi monorepo test harness. Suites that need a genuine session tree — branch order, compaction entries, custom entries, resume — use `SessionManager.inMemory()` or `SessionManager.create()` rather than reimplementing them.

@@ -120,6 +120,18 @@ describe("SoL-Pi configuration preflight", () => {
 		expect(JSON.parse(result.stdout)).toMatchObject({ all_enabled: false });
 	});
 
+	it("accepts the optional trajectory inspector flag without requiring it for all-enabled mode", () => {
+		const result = run(writeConfig({ ...ALL_ENABLED, trajectoryInspector: true }));
+		expect(result.status).toBe(0);
+		expect(JSON.parse(result.stdout).effective_config.trajectoryInspector).toBe(true);
+	});
+
+	it("rejects a non-boolean trajectory inspector flag", () => {
+		const result = run(writeConfig({ version: 1, trajectoryInspector: "yes" }), false);
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain("trajectoryInspector must be boolean");
+	});
+
 	it("rejects unknown configuration keys", () => {
 		const result = run(writeConfig({ ...ALL_ENABLED, provider: "custom" }));
 		expect(result.status).toBe(1);
