@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="460" viewBox="0 0 900 460" role="img" aria-labelledby="title description">
+<title id="title">NVlabs/SoL-Pi star history</title>
+<desc id="description">892 current stars. Historical line sums daily star additions reported by GitHub. Updated 2026-09-11 14:37 UTC.</desc>
+<rect width="900" height="460" rx="12" fill="#ffffff"/>
+<g font-family="Arial, Helvetica, sans-serif" fill="#1f2328">
+<text x="36" y="42" font-size="24" font-weight="700">Star history</text>
+<text x="36" y="68" font-size="15" fill="#59636e">NVlabs/SoL-Pi</text>
+<text x="864" y="42" text-anchor="end" font-size="24" font-weight="700">892 stars</text>
+<text x="864" y="68" text-anchor="end" font-size="13" fill="#59636e">Current total</text>
+<text x="80" y="104" font-size="12" fill="#59636e">Cumulative daily star additions</text>
+<path d="M80,350 H854" stroke="#d1d9e0" stroke-width="1"/>
+<text x="68" y="354" text-anchor="end" font-size="12" fill="#59636e">0</text>
+<path d="M80,304 H854" stroke="#d1d9e0" stroke-width="1"/>
+<text x="68" y="308" text-anchor="end" font-size="12" fill="#59636e">200</text>
+<path d="M80,258 H854" stroke="#d1d9e0" stroke-width="1"/>
+<text x="68" y="262" text-anchor="end" font-size="12" fill="#59636e">400</text>
+<path d="M80,212 H854" stroke="#d1d9e0" stroke-width="1"/>
+<text x="68" y="216" text-anchor="end" font-size="12" fill="#59636e">600</text>
+<path d="M80,166 H854" stroke="#d1d9e0" stroke-width="1"/>
+<text x="68" y="170" text-anchor="end" font-size="12" fill="#59636e">800</text>
+<path d="M80,120 H854" stroke="#d1d9e0" stroke-width="1"/>
+<text x="68" y="124" text-anchor="end" font-size="12" fill="#59636e">1,000</text>
+<text x="80" y="377" text-anchor="middle" font-size="12" fill="#59636e">2026-09-07</text>
+<text x="273.5" y="377" text-anchor="middle" font-size="12" fill="#59636e">2026-09-08</text>
+<text x="467" y="377" text-anchor="middle" font-size="12" fill="#59636e">2026-09-09</text>
+<text x="660.5" y="377" text-anchor="middle" font-size="12" fill="#59636e">2026-09-10</text>
+<text x="854" y="377" text-anchor="middle" font-size="12" fill="#59636e">2026-09-11</text>
+<path d="M80.00,350.00 L273.50,349.77 L467.00,348.16 L660.50,213.15 L854.00,144.84 L854,350 L80,350 Z" fill="#608f00" fill-opacity="0.10"/>
+<path d="M80.00,350.00 L273.50,349.77 L467.00,348.16 L660.50,213.15 L854.00,144.84" fill="none" stroke="#608f00" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="854" cy="144.84" r="4" fill="#608f00"/>
+<text x="36" y="415" font-size="12" fill="#59636e">Source: GitHub API · Scheduled hourly</text>
+<text x="864" y="415" text-anchor="end" font-size="12" fill="#59636e">Updated 2026-09-11 14:37 UTC</text>
+<text x="36" y="439" font-size="11" fill="#59636e">Current total excludes removed stars; daily history follows GitHub’s reporting boundaries.</text>
+</g></svg>
