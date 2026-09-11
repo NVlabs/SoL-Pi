@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2240" height="860" class="tb4-bars-svg" viewBox="0 0 1120 430" role="img" aria-labelledby="tb4-bars-svg-title tb4-bars-svg-desc"><style>:root { --ink:#101114; --soft:#f4f5f2; --font-geist-sans:Arial,Helvetica,sans-serif; }
+.tb4-study { scroll-margin-top: 110px; }
+.tb4-bar-figure { width: min(1120px, calc(100vw - 48px)); position: relative; left: 50%; transform: translateX(-50%); margin: 28px 0; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); overflow: hidden; font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif; }
+.tb4-bar-header { position: relative; padding: 22px 190px 16px 25px; display: grid; gap: 4px; }
+.tb4-bar-header strong { font-size: 1.22rem; font-weight: 650; color: var(--ink); letter-spacing: -.02em; }
+.tb4-chart-scroll { overflow-x: auto; }
+.tb4-chart-scroll:focus-visible { outline: 3px solid var(--nv-green); outline-offset: -3px; }
+.tb4-bars-svg { display: block; width: 100%; min-width: 1120px; height: auto; }
+.tb4-bars-svg text { font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif; fill: #202020; }
+.tb4-bar-heading { font-size: 20px; font-weight: 650; }
+.tb4-bar-unit { font-size: 14px; }
+.tb4-bars-svg .tb4-bar-unit { fill: #555b51; }
+.tb4-bar-grid { stroke: #d8dad9; stroke-width: .9; stroke-dasharray: 3 4; }
+.tb4-bar-axis { fill: none; stroke: #202020; stroke-width: 1.2; }
+.tb4-bar-tick { font-size: 14px; }
+.tb4-bar-value { font-size: 18px; font-weight: 650; }
+.tb4-bar-label { font-size: 16px; }
+.tb4-bar-figure figcaption { margin: 0; padding: 14px 25px; border-top: 1px solid var(--line); color: #4e5549; font-size: .875rem; line-height: 1.65; }
+.tb4-panel { width: min(1120px, calc(100vw - 48px)); position: relative; left: 50%; transform: translateX(-50%); margin: 28px 0; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); overflow: hidden; font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif; }
+.tb4-table-scroll { overflow-x: auto; }
+.tb4-table-scroll:focus-visible { outline: 3px solid var(--nv-green); outline-offset: -3px; }
+.tb4-table { width: 100%; min-width: 800px; border-collapse: collapse; font-size: 1rem; font-variant-numeric: tabular-nums; }
+.tb4-table caption { padding: 22px 25px 20px; text-align: left; border-bottom: 1px solid var(--line); }
+.tb4-kicker { display: block; margin-bottom: 8px; color: #456f00; font-family: var(--font-geist-mono), monospace; font-size: .78rem; font-weight: 650; letter-spacing: .07em; text-transform: uppercase; }
+.tb4-table caption strong { display: block; color: var(--ink); font-size: 1.22rem; font-weight: 650; letter-spacing: -.02em; }
+.tb4-units { display: block; margin-top: 7px; color: #555b51; font-size: .875rem; }
+.tb4-table th, .tb4-table td { padding: 18px 20px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.tb4-table th:first-child { text-align: left; padding-left: 25px; }
+.tb4-table th:last-child, .tb4-table td:last-child { padding-right: 25px; }
+.tb4-table thead th { color: #4b5047; font-size: .9rem; font-weight: 600; background: #f7f8f5; }
+.tb4-table tbody th { color: var(--ink); font-weight: 600; }
+.tb4-highlight { background: #f2f7e9; }
+.tb4-table .tb4-highlight th, .tb4-highlight .tb4-total { color: #456f00; font-weight: 700; }
+.tb4-footnote { margin: 0; padding: 15px 25px; color: #4e5549; font-size: .875rem; line-height: 1.65; }
+.tb4-scope-footnote { padding-top: 0; font-size: .8125rem; color: #5a6155; }
+@media (max-width: 600px) {
+  .tb4-panel, .tb4-bar-figure { width: calc(100vw - 32px); }
+  .tb4-bar-header { padding: 18px; }
+  .tb4-footnote { padding-left: 18px; padding-right: 18px; }
+}
+
+svg.tb4-bars-svg { width:2240px; min-width:2240px; height:860px; background:white; }</style><title id="tb4-bars-svg-title">Terminal-Bench 4: solved tasks and total model cost</title><desc id="tb4-bars-svg-desc">On 63 CPU-only tasks, Codex solves 18 at $272.35, Pi solves 18 at $286.45, and SoL-Pi solves 15 at $211.12. Both vertical axes begin at zero. Costs are reported API-equivalent estimates.</desc><g data-tb4-metric="solved" data-baseline="0"><text x="290" y="30" text-anchor="middle" class="tb4-bar-heading">(a) Tasks solved</text><text x="290" y="55" text-anchor="middle" class="tb4-bar-unit">out of 63 · higher is better</text><g><line x1="80" y1="360" x2="500" y2="360" class="tb4-bar-grid"></line><text x="67" y="365" text-anchor="end" class="tb4-bar-tick">0</text></g><g><line x1="80" y1="292.8571428571429" x2="500" y2="292.8571428571429" class="tb4-bar-grid"></line><text x="67" y="297.8571428571429" text-anchor="end" class="tb4-bar-tick">5</text></g><g><line x1="80" y1="225.71428571428572" x2="500" y2="225.71428571428572" class="tb4-bar-grid"></line><text x="67" y="230.71428571428572" text-anchor="end" class="tb4-bar-tick">10</text></g><g><line x1="80" y1="158.57142857142858" x2="500" y2="158.57142857142858" class="tb4-bar-grid"></line><text x="67" y="163.57142857142858" text-anchor="end" class="tb4-bar-tick">15</text></g><g><line x1="80" y1="91.42857142857144" x2="500" y2="91.42857142857144" class="tb4-bar-grid"></line><text x="67" y="96.42857142857144" text-anchor="end" class="tb4-bar-tick">20</text></g><path d="M80 78V360H500" class="tb4-bar-axis"></path><g><rect data-tb4-bar="solved-Codex" data-value="18" x="116" y="118.28571428571428" width="76" height="241.71428571428572" fill="#b9b9b9"></rect><text x="154" y="106.28571428571428" text-anchor="middle" class="tb4-bar-value">18/63</text><text x="154" y="389" text-anchor="middle" class="tb4-bar-label">Codex</text></g><g><rect data-tb4-bar="solved-Pi" data-value="18" x="248" y="118.28571428571428" width="76" height="241.71428571428572" fill="#777777"></rect><text x="286" y="106.28571428571428" text-anchor="middle" class="tb4-bar-value">18/63</text><text x="286" y="389" text-anchor="middle" class="tb4-bar-label">Pi</text></g><g><rect data-tb4-bar="solved-SoL-Pi" data-value="15" x="380" y="158.57142857142858" width="76" height="201.42857142857142" fill="#76b900"></rect><text x="418" y="146.57142857142858" text-anchor="middle" class="tb4-bar-value">15/63</text><text x="418" y="389" text-anchor="middle" class="tb4-bar-label">SoL-Pi</text></g></g><g data-tb4-metric="cost" data-baseline="0"><text x="850" y="30" text-anchor="middle" class="tb4-bar-heading">(b) Total model cost</text><text x="850" y="55" text-anchor="middle" class="tb4-bar-unit">API-equivalent USD · lower is better</text><g><line x1="640" y1="360" x2="1060" y2="360" class="tb4-bar-grid"></line><text x="627" y="365" text-anchor="end" class="tb4-bar-tick">$0</text></g><g><line x1="640" y1="271.875" x2="1060" y2="271.875" class="tb4-bar-grid"></line><text x="627" y="276.875" text-anchor="end" class="tb4-bar-tick">$100</text></g><g><line x1="640" y1="183.75" x2="1060" y2="183.75" class="tb4-bar-grid"></line><text x="627" y="188.75" text-anchor="end" class="tb4-bar-tick">$200</text></g><g><line x1="640" y1="95.625" x2="1060" y2="95.625" class="tb4-bar-grid"></line><text x="627" y="100.625" text-anchor="end" class="tb4-bar-tick">$300</text></g><path d="M640 78V360H1060" class="tb4-bar-axis"></path><g><rect data-tb4-bar="cost-Codex" data-value="272.35" x="676" y="119.99156249999996" width="76" height="240.00843750000004" fill="#b9b9b9"></rect><text x="714" y="107.99156249999996" text-anchor="middle" class="tb4-bar-value">$272.35</text><text x="714" y="389" text-anchor="middle" class="tb4-bar-label">Codex</text></g><g><rect data-tb4-bar="cost-Pi" data-value="286.45" x="808" y="107.56593750000002" width="76" height="252.43406249999998" fill="#777777"></rect><text x="846" y="95.56593750000002" text-anchor="middle" class="tb4-bar-value">$286.45</text><text x="846" y="389" text-anchor="middle" class="tb4-bar-label">Pi</text></g><g><rect data-tb4-bar="cost-SoL-Pi" data-value="211.12" x="940" y="173.95049999999998" width="76" height="186.04950000000002" fill="#76b900"></rect><text x="978" y="161.95049999999998" text-anchor="middle" class="tb4-bar-value">$211.12</text><text x="978" y="389" text-anchor="middle" class="tb4-bar-label">SoL-Pi</text></g></g></svg>
