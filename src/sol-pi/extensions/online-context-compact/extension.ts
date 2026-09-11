@@ -87,13 +87,15 @@ function progressSummary(input: PlanUpdateInput, completedStepId: string): Progr
 	};
 }
 
-function compactionMessageCount(entries: readonly SessionEntry[], startIndex: number, endIndex: number): number {
-	let count = 0;
+function compactionTokenEstimate(entries: readonly SessionEntry[], startIndex: number, endIndex: number): number {
+	let tokens = 0;
 	for (let index = startIndex; index < endIndex; index++) {
 		const entry = entries[index];
-		if (entry && entry.type !== "compaction" && sessionEntryToContextMessages(entry).length > 0) count++;
+		if (!entry || entry.type === "compaction") continue;
+		const message = sessionEntryToContextMessages(entry)[0];
+		if (message) tokens += estimateTokens(message);
 	}
-	return count;
+	return tokens;
 }
 
 function branchAfterAbort(entries: readonly SessionEntry[]): SessionEntry[] {
@@ -127,25 +129,33 @@ function branchAfterAbort(entries: readonly SessionEntry[]): SessionEntry[] {
 	];
 }
 
-function nativeCompactionFeasible(entries: readonly SessionEntry[], keepRecentTokens: number): boolean {
+export function estimateNativeCompactionTokens(
+	entries: readonly SessionEntry[],
+	keepRecentTokens: number,
+): number {
 	const path = branchAfterAbort(entries);
 	let startIndex = 0;
+	let previousSummaryTokens = 0;
 	for (let index = path.length - 1; index >= 0; index--) {
 		const entry = path[index];
 		if (entry?.type !== "compaction") continue;
 		const keptIndex = path.findIndex((item) => item.id === entry.firstKeptEntryId);
 		startIndex = keptIndex >= 0 ? keptIndex : index + 1;
+		const previousSummary = sessionEntryToContextMessages(entry)[0];
+		previousSummaryTokens = previousSummary ? estimateTokens(previousSummary) : 0;
 		break;
 	}
 
 	const cut = findCutPoint(path, startIndex, path.length, keepRecentTokens);
 	const historyEnd = cut.isSplitTurn ? cut.turnStartIndex : cut.firstKeptEntryIndex;
-	const historyMessages = historyEnd > startIndex ? compactionMessageCount(path, startIndex, historyEnd) : 0;
-	const prefixMessages =
+	const historyTokens =
+		historyEnd > startIndex ? compactionTokenEstimate(path, startIndex, historyEnd) : 0;
+	const prefixTokens =
 		cut.isSplitTurn && cut.turnStartIndex >= 0
-			? compactionMessageCount(path, cut.turnStartIndex, cut.firstKeptEntryIndex)
+			? compactionTokenEstimate(path, cut.turnStartIndex, cut.firstKeptEntryIndex)
 			: 0;
-	return historyMessages > 0 || prefixMessages > 0;
+	const newHistoryTokens = historyTokens + prefixTokens;
+	return newHistoryTokens > 0 ? previousSummaryTokens + newHistoryTokens : 0;
 }
 
 function validPositiveInteger(value: unknown): value is number {
@@ -275,8 +285,10 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 
 			const usage = context.getContextUsage();
 			const writeTokens = contextTokens(context);
-			const fixedTokens = tokenEstimate(context.getSystemPrompt());
-			const archiveTokens = Math.max(0, writeTokens - fixedTokens - keepRecentTokens);
+			const archiveTokens = estimateNativeCompactionTokens(
+				context.sessionManager.getBranch(),
+				keepRecentTokens,
+			);
 			const contextWindowTokens = validPositiveInteger(usage?.contextWindow)
 				? usage.contextWindow
 				: validPositiveInteger(context.model?.contextWindow)
@@ -302,7 +314,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 				economics: DEFAULT_COMPACTION_ECONOMICS,
 			});
 			const decision: CompactionDecision =
-				priced.compact && !nativeCompactionFeasible(context.sessionManager.getBranch(), keepRecentTokens)
+				priced.compact && archiveTokens === 0
 					? { ...priced, compact: false, reason: "native_not_compactable" }
 					: priced;
 			if (!decision.compact) return;
