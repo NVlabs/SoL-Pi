@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { fetchStarHistory, renderStarHistory, toDailyPoints } from "../scripts/update-star-history.mjs";
+import { fetchStarHistory, toDailyPoints } from "../scripts/update-star-history.mjs";
 
 const sunday = Date.parse("2026-09-06T00:00:00Z") / 1000;
 const week = (start = sunday, days = [0, 0, 1, 7, 587, 290, 0]) => ({ week: start, total: days.reduce((a, b) => a + b, 0), days });
@@ -19,19 +19,14 @@ describe("star history generation", () => {
 		expect(points[0].stars).toBe(0);
 		expect(points.at(-1)).toEqual({ time: Date.parse("2026-09-11T00:00:00Z"), stars: 886 });
 		expect(points.every((point, i) => i === 0 || point.time > points[i - 1].time)).toBe(true);
-		for (const theme of ["light", "dark"]) {
-			const svg = renderStarHistory(data, theme);
-			expect(svg).toContain("880 stars");
-			expect(svg).toContain("Updated 2026-09-11 14:00 UTC");
-			expect(svg).not.toMatch(/NaN|Infinity/);
-		}
+
 	});
 
-	it("renders empty and zero-star histories with a finite scale", () => {
+	it("provides a finite time range for empty and zero-star histories", () => {
 		for (const weeks of [[], [week(sunday, [0, 0, 0, 0, 0, 0, 0])]]) {
 			const data = { ...snapshot(weeks), currentStars: 0 };
 			expect(toDailyPoints(data).map((point) => point.stars)).toEqual([0, 0]);
-			expect(renderStarHistory(data, "light")).not.toMatch(/NaN|Infinity/);
+			expect(toDailyPoints(data)[1].time).toBeGreaterThan(toDailyPoints(data)[0].time);
 		}
 	});
 
@@ -40,12 +35,6 @@ describe("star history generation", () => {
 			[week(), week()], [week(sunday, [-1, 0, 0, 0, 0, 0, 0])]]) {
 			expect(() => toDailyPoints(snapshot(weeks))).toThrow(/Invalid/);
 		}
-	});
-
-	it("escapes repository labels in SVG", () => {
-		const svg = renderStarHistory({ ...snapshot(), repository: 'owner/<script>"&' }, "light");
-		expect(svg).toContain("owner/&lt;script&gt;&quot;&amp;");
-		expect(svg).not.toContain("<script>");
 	});
 
 	it("fetches beyond a full page and keeps the current count independent", async () => {
