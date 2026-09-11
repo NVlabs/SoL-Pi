@@ -146,7 +146,7 @@ node scripts/check-pi-compat.mjs
 
 SoL-Pi is developed and maintained by NVIDIA as a standalone extension for Pi.
 
-External code contributions are not accepted at this time. Bug reports and private security reports remain welcome through the channels described in [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+We welcome tested, Pi-compatible extension PRs that improve token efficiency and reduce token cost. Our team will help benchmark contributions, publish results on a regular reporting cycle, and credit authors of accepted PRs as Contributors. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ## Acknowledgements
 
