@@ -7,6 +7,8 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { visibleWidth } from "@earendil-works/pi-tui";
+import { TrajectoryWidget } from "../src/sol-pi/extensions/trajectory-inspector/trajectory.ts";
 import { DEFAULT_CONFIG } from "../src/sol-pi/config.ts";
 import { registerConfiguredFeatures } from "../src/sol-pi/index.ts";
 import { createTrajectoryInspectorExtension, TRAJECTORY_EVENT_SCHEMA, TRAJECTORY_WIDGET_KEY, TrajectoryStore } from "../src/sol-pi/extensions/trajectory-inspector/index.ts";
@@ -40,6 +42,26 @@ describe("TrajectoryStore", () => {
 
 	it("rejects an invalid record bound", () => {
 		expect(() => new TrajectoryStore(0)).toThrow("maxRecords");
+	});
+
+	it("fits narrow terminals and removes control characters from metadata", () => {
+		const store = new TrajectoryStore();
+		store.record({ kind: "tool", label: "\u001b[2J\n" + "界🙂".repeat(80), turnIndex: 12345 });
+		const widget = new TrajectoryWidget(store, plainTheme);
+		expect(store.snapshot()[0]?.label).not.toMatch(/[\x00-\x1f]/u);
+		for (const width of [1, 10, 20, 40, 80]) {
+			for (const line of widget.render(width)) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+				expect(line).not.toContain("\u001b[2J");
+			}
+		}
+	});
+
+	it("does not reuse sequence IDs when clearing the live tail", () => {
+		const store = new TrajectoryStore();
+		const first = store.record({ kind: "session", label: "first" });
+		store.clear();
+		expect(store.record({ kind: "session", label: "resumed" }).sequence).toBeGreaterThan(first.sequence);
 	});
 });
 
@@ -99,6 +121,7 @@ describe("trajectory inspector extension", () => {
 			expect(ledger).not.toContain("secret command");
 			expect(ledger).not.toContain("secret assistant");
 			expect(ledger).toContain('"kind":"tool"');
+			expect(entries.find(entry => entry.kind === "result")?.label).toBe("result bash · 2 B");
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}
@@ -109,5 +132,49 @@ describe("trajectory inspector extension", () => {
 		registerConfiguredFeatures(pi.asExtensionApi(), { ...DEFAULT_CONFIG, trajectoryInspector: true });
 		expect(pi.registeredCommands.map((command) => command.name)).toEqual(["trajectory"]);
 		expect([...pi.handlers.keys()]).toContain("tool_execution_start");
+	});
+
+	it("closes failed requests when no provider-response callback arrives", async () => {
+		const root = await mkdtemp(join(tmpdir(), "sol-pi-trajectory-error-"));
+		try {
+			const manager = new FakeSessionManager([], "error-session", root);
+			const pi = new FakePi(manager);
+			const context = fakeContext(manager);
+			createTrajectoryInspectorExtension()(pi.asExtensionApi());
+			await pi.emit("session_start", { reason: "startup" }, context);
+			await pi.emit("turn_start", { turnIndex: 0, timestamp: Date.now() }, context);
+			await pi.emit("before_provider_request", {}, context);
+			await pi.emit("turn_end", { message: { ...assistantMessage(""), stopReason: "error" }, toolResults: [] }, context);
+			await pi.emit("session_shutdown", { reason: "quit" }, context);
+			const ledger = await readFile(join(root, "sol-pi/error-session/trajectory-inspector/events.jsonl"), "utf8");
+			const entries = ledger.trim().split("\n").map(line => JSON.parse(line));
+			const request = entries.find(e => e.kind === "request");
+			expect(entries.find(e => e.event === "update" && e.sequence === request.sequence)).toMatchObject({ status: "error", detail: "ended without response metadata" });
+		} finally { await rm(root, { recursive: true, force: true }); }
+	});
+
+	it("persists evicted span completions and separates resumed recorder IDs without UI calls", async () => {
+		const root = await mkdtemp(join(tmpdir(), "sol-pi-trajectory-resume-"));
+		try {
+			const manager = new FakeSessionManager([], "resume-session", root);
+			for (let attempt = 0; attempt < 2; attempt++) {
+				const pi = new FakePi(manager);
+				const context = fakeContext(manager);
+				createTrajectoryInspectorExtension({ maxRecords: 1 })(pi.asExtensionApi());
+				await pi.emit("session_start", { reason: "resume" }, context);
+				await pi.emit("tool_execution_start", { toolName: "read", toolCallId: "tool-1" }, context);
+				await pi.emit("session_info_changed", { name: "PRIVATE SESSION TITLE" }, context);
+				await pi.emit("tool_execution_end", { toolCallId: "tool-1", isError: true }, context);
+				const command = pi.registeredCommands[0]?.options as { handler: (args: string, ctx: typeof context) => Promise<void> };
+				await command.handler("", context);
+				await pi.emit("session_shutdown", { reason: "quit" }, context);
+			}
+			const ledger = await readFile(join(root, "sol-pi/resume-session/trajectory-inspector/events.jsonl"), "utf8");
+			const entries = ledger.trim().split("\n").map(line => JSON.parse(line));
+			expect(new Set(entries.map(e => e.runId)).size).toBe(2);
+			expect(entries.filter(e => e.event === "update" && e.status === "error")).toHaveLength(2);
+			expect(ledger).not.toContain("PRIVATE SESSION TITLE");
+			expect(entries.every(e => typeof e.timestamp === "number")).toBe(true);
+		} finally { await rm(root, { recursive: true, force: true }); }
 	});
 });

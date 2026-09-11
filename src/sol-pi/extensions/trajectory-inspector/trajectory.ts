@@ -5,6 +5,7 @@
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
+import { stripTerminalSequences, truncateToWidth } from "@earendil-works/pi-tui";
 
 export type TrajectoryStatus = "running" | "ok" | "error" | "info";
 
@@ -34,6 +35,7 @@ const MAX_LABEL_LENGTH = 96;
 const MAX_DETAIL_LENGTH = 64;
 
 function clip(value: string, maxLength: number): string {
+	value = stripTerminalSequences(value).replace(/[\x00-\x1f\x7f]/gu, " ");
 	if (value.length <= maxLength) return value;
 	return `${value.slice(0, Math.max(0, maxLength - 1))}…`;
 }
@@ -83,7 +85,6 @@ export class TrajectoryStore {
 
 	clear(): void {
 		this.records = [];
-		this.sequence = 0;
 	}
 
 	record(input: TrajectoryRecordInput, timestamp = Date.now()): TrajectoryRecord {
@@ -120,7 +121,7 @@ export class TrajectoryStore {
 export function renderTrajectoryLines(store: TrajectoryStore, theme: Theme, width = 120): string[] {
 	const records = store.snapshot();
 	const title = `${theme.fg("accent", "Trajectory")} ${theme.fg("dim", `· ${store.totalRecords} events · live`)}`;
-	if (records.length === 0) return [title, theme.fg("muted", "  waiting for agent activity")];
+	if (records.length === 0) return [title, theme.fg("muted", "  waiting for agent activity")].map(line => truncateToWidth(line, width));
 
 	const maxTextWidth = Math.max(24, width - 18);
 	return [
@@ -131,7 +132,7 @@ export function renderTrajectoryLines(store: TrajectoryStore, theme: Theme, widt
 			const text = clip(`${record.label}${detail}`, maxTextWidth);
 			return `${statusGlyph(record.status)} ${timeLabel(record.timestamp)}${turn} ${text}${formatDuration(record.durationMs)}`;
 		}),
-	];
+	].map(line => truncateToWidth(line, width));
 }
 
 export class TrajectoryWidget implements Component {
