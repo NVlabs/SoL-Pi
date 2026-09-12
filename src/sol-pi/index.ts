@@ -9,6 +9,7 @@ import { registerActionFusion } from "./extensions/action-fusion/index.ts";
 import { registerEvidencePreservingReducer } from "./extensions/evidence-preserving-reducer/index.ts";
 import { registerObservationPack } from "./extensions/observation-pack/index.ts";
 import { registerOnlineContextCompact } from "./extensions/online-context-compact/index.ts";
+import { watchMechanismReachability } from "./reachability.ts";
 
 export function registerConfiguredFeatures(pi: ExtensionAPI, config: SolPiConfig): void {
 	if (config.actionFusion) registerActionFusion(pi);
@@ -32,7 +33,9 @@ export function createSolPiExtension(
 		pi.on("session_start", (_event, ctx) => {
 			if (initialized) return;
 			initialized = true;
-			registerConfiguredFeatures(pi, loadConfig(ctx));
+			const config = loadConfig(ctx);
+			registerConfiguredFeatures(pi, config);
+			watchMechanismReachability(pi, config, ctx);
 		});
 	};
 }

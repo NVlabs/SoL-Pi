@@ -41,9 +41,9 @@ This preflight does not make every valid SoL-Pi configuration all-enabled. Witho
 
 ## Feature behavior
 
-- `actionFusion`: registers SoL-Pi replacements for Pi's `edit` and `write` tools.
+- `actionFusion`: registers SoL-Pi replacements for Pi's `edit` and `write` tools. Fusion is reachable only when a model-visible tool exposes `then_run`. A later-loaded extension that replaces that surface (for example a code-mode harness with a single `fabric_exec` tool) leaves Action Fusion registered but inert; SoL-Pi records a session diagnostic and, in TUI mode, shows a warning.
 - `observationPack`: registers `obs_recall` and a provider-context projection handler.
-- `evidencePreservingReducer`: registers a `tool_result` handler and delegates long diagnostic-log reduction to the configured reducer provider/model.
+- `evidencePreservingReducer`: registers a `tool_result` handler and delegates long diagnostic-log reduction to the configured reducer provider/model. A recovered body under 4 096 bytes is declined with a `source-under-min-bytes` journal entry rather than silently. If no configured tool reports as `bash`, SoL-Pi records the same style of load-time diagnostic used for Action Fusion.
 - `evidencePreservingReducerProvider`: provider namespace used to resolve the reducer model through Pi's model registry.
 - `evidencePreservingReducerModel`: model id used for Evidence-Preserving Reducer.
 - `onlineContextCompact`: registers `update_plan` and boundary-driven native compaction after the other SoL-Pi context transformers.
