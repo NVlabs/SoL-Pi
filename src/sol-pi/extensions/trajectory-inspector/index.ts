@@ -57,9 +57,8 @@ interface ActiveState {
 	widgetConfigured: boolean;
 	requestRender?: () => void;
 	turn?: ActiveSpan & { readonly turnIndex: number };
-	request?: ActiveSpan;
+	request?: ActiveSpan & { responseStatus?: number };
 	assistant?: ActiveSpan;
-	compaction?: ActiveSpan;
 	lastContext?: { readonly messages: number; readonly bytes: number };
 }
 
@@ -238,7 +237,6 @@ export function createTrajectoryInspectorExtension(options: TrajectoryInspectorO
 			state.turn = undefined;
 			state.request = undefined;
 			state.assistant = undefined;
-			state.compaction = undefined;
 			state.lastContext = undefined;
 			record(context, { kind: "session", label: `session ${event.reason}`, status: "info" });
 		});
@@ -274,9 +272,9 @@ export function createTrajectoryInspectorExtension(options: TrajectoryInspectorO
 			const timestamp = Date.now();
 			// Transport failures can end a turn without after_provider_response.
 			update(context, state?.request?.sequence, {
-				status: errorStopReason(event.message) ? "error" : "info",
+				status: errorStopReason(event.message) ? "error" : "ok",
 				durationMs: durationSince(state?.request, timestamp),
-				detail: "ended without response metadata",
+				detail: state?.request?.responseStatus === undefined ? "ended without response metadata" : `HTTP ${state.request.responseStatus}`,
 			});
 			if (state) state.request = undefined;
 			update(context, state?.turn?.sequence, {
@@ -314,12 +312,13 @@ export function createTrajectoryInspectorExtension(options: TrajectoryInspectorO
 		pi.on("after_provider_response", (event, context) => {
 			const state = stateFor(context);
 			const timestamp = Date.now();
+			// One logical request can receive several callbacks during provider retries.
+			if (state?.request) state.request.responseStatus = event.status;
 			update(context, state?.request?.sequence, {
-				status: event.status >= 400 ? "error" : "ok",
+				status: "running",
 				durationMs: durationSince(state?.request, timestamp),
 				detail: `HTTP ${event.status}`,
 			});
-			if (state) state.request = undefined;
 		});
 
 		pi.on("message_start", (event: MessageStartEvent, context) => {
@@ -333,6 +332,12 @@ export function createTrajectoryInspectorExtension(options: TrajectoryInspectorO
 			if (event.message.role !== "assistant") return;
 			const state = stateFor(context);
 			const timestamp = Date.now();
+			update(context, state?.request?.sequence, {
+				status: errorStopReason(event.message) ? "error" : "ok",
+				durationMs: durationSince(state?.request, timestamp),
+				detail: state?.request?.responseStatus === undefined ? "ended without response metadata" : `HTTP ${state.request.responseStatus}`,
+			});
+			if (state) state.request = undefined;
 			update(context, state?.assistant?.sequence, {
 				status: errorStopReason(event.message) ? "error" : "ok",
 				durationMs: durationSince(state?.assistant, timestamp),
@@ -376,16 +381,12 @@ export function createTrajectoryInspectorExtension(options: TrajectoryInspectorO
 		});
 
 		pi.on("session_before_compact", (event: SessionBeforeCompactEvent, context) => {
-			const result = record(context, { kind: "compact", label: `compaction started · ${event.reason}`, status: "running" });
-			const state = stateFor(context);
-			if (state && result) state.compaction = { sequence: result.sequence, startedAt: result.timestamp };
+			// The public API has no failed/cancelled compaction completion event.
+			record(context, { kind: "compact", label: `compaction attempted · ${event.reason}`, status: "info" });
 		});
 
 		pi.on("session_compact", (event: SessionCompactEvent, context) => {
-			const state = stateFor(context);
-			update(context, state?.compaction?.sequence, { status: "ok", durationMs: durationSince(state?.compaction, Date.now()) });
-			if (state) state.compaction = undefined;
-			if (event.fromExtension) record(context, { kind: "compact", label: "compaction completed by extension", status: "info" });
+			record(context, { kind: "compact", label: event.fromExtension ? "compaction completed by extension" : "compaction completed", status: "ok" });
 		});
 
 		pi.on("model_select", (event, context) => {

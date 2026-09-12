@@ -32,6 +32,8 @@ const server = createServer(async (req, res) => {
   try {
     let data = ''; for await (const chunk of req) data += chunk;
     const body = JSON.parse(data); requests.push(hash(body));
+    const summarizing = scenario.compact && !body.tools?.length;
+    if (summarizing && scenario.compactFailure) { res.writeHead(400); res.end(JSON.stringify({ error: { message: 'fixture compaction failure' } })); return; }
     if (scenario.retry && requests.length === 1) { res.writeHead(503); res.end(JSON.stringify({ error: { message: 'fixture overloaded' } })); return; }
     const user = body.messages.findLastIndex(m => m.role === 'user');
     const done = body.messages.slice(user + 1).filter(m => m.role === 'tool').length;
@@ -39,7 +41,7 @@ const server = createServer(async (req, res) => {
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     const chunk = (delta, finish_reason = null) => res.write(`data: ${JSON.stringify({ id: 'fixture', object: 'chat.completion.chunk', created: 1, model: 'fixture', choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
     chunk({ role: 'assistant', content: '' });
-    if (scenario.cancel) { setTimeout(() => cancelRequest?.(), 20); return; }
+    if (scenario.cancel || (summarizing && scenario.compactCancel)) { setTimeout(() => cancelRequest?.(), 20); return; }
     if (tool) chunk({ tool_calls: [{ index: 0, id: `call_${done}`, type: 'function', function: { name: 'read', arguments: JSON.stringify({ path: scenario.error && done === 0 ? 'missing.txt' : 'fixture.txt' }) } }] });
     else chunk({ content: 'VERIFIED' });
     chunk({}, tool ? 'tool_calls' : 'stop'); res.end('data: [DONE]\n\n');
@@ -97,7 +99,15 @@ async function run(enabled, caseIndex, resume = false) {
       else assert.equal(final.content.find(c => c.type === 'text')?.text.trim(), 'PRIVATE_FIXTURE_CONTENT');
     }
     const visible = lastLines;
-    if (scenario.compact) await session.compact('Preserve the completed file-read task.');
+    if (scenario.compact) {
+      if (scenario.compactFailure || scenario.compactCancel) {
+        cancelRequest = () => session.abortCompaction();
+        await assert.rejects(() => session.compact('Preserve the completed file-read task.'));
+        scenario.compactFailure = false;
+        scenario.compactCancel = false;
+      }
+      await session.compact('Preserve the completed file-read task.');
+    }
     await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'exit' });
     const elapsedMs = performance.now() - start; const usage = process.cpuUsage(cpu);
     // Lifecycle/resize assertions are deliberately outside the timing window.
@@ -136,6 +146,8 @@ try {
       ['retry', { calls: 1, error: false, retry: true }, false],
       ['cancel', { calls: 0, error: false, cancel: true }, false],
       ['compact', { calls: 2, error: false, compact: true }, false],
+      ['compact-failure-then-success', { calls: 2, error: false, compact: true, compactFailure: true }, false],
+      ['compact-cancellation-then-success', { calls: 2, error: false, compact: true, compactCancel: true }, false],
     ]) {
       scenario = config;
       const result = await run(true, name, resume);
