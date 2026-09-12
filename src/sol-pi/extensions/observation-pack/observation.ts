@@ -20,6 +20,33 @@ const CHARS_PER_TOKEN = 4;
 const OBSERVATION_ID_PATTERN = /^obs_[a-f0-9]{24}$/u;
 const READ_OBJECT_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW;
 const CREATE_OBJECT_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
+const O_NOFOLLOW_SUPPORTED = typeof constants.O_NOFOLLOW === "number";
+
+/**
+ * Best-available symlink pre-check for platforms without O_NOFOLLOW.
+ * Node leaves O_NOFOLLOW `undefined` on Windows, and `undefined`
+ * contributes 0 to the flag words above — so without this the symlink
+ * refusal would silently vanish there (#16). Gives the ELOOP the open
+ * itself would have raised. This is a pre-open lstat, not the atomic
+ * guarantee O_NOFOLLOW provides on POSIX (no pure-Node primitive on
+ * Windows preserves it); on platforms with O_NOFOLLOW the open keeps
+ * refusing atomically and this is never consulted.
+ */
+export async function assertNotSymlink(path: string): Promise<void> {
+	let stats;
+	try {
+		stats = await lstat(path);
+	} catch (error) {
+		// Absent: let open() report ENOENT itself. Anything else (EACCES,
+		// for example) is real and must surface, not vanish.
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") return;
+		throw error;
+	}
+	if (!stats.isSymbolicLink()) return;
+	throw Object.assign(new Error(`Stored observation is not a regular file: ${path}`), {
+		code: "ELOOP",
+	});
+}
 
 /**
  * Receipts from the evidence-preserving reducer are already a reduction of a
@@ -130,10 +157,12 @@ export async function ensureStored(observation: Observation): Promise<void> {
 
 	let handle: FileHandle | undefined;
 	try {
+		if (!O_NOFOLLOW_SUPPORTED) await assertNotSymlink(observation.filePath);
 		handle = await open(observation.filePath, CREATE_OBJECT_FLAGS, 0o600);
 		await handle.writeFile(observation.text, { encoding: "utf8" });
 	} catch (error) {
 		if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
+		if (!O_NOFOLLOW_SUPPORTED) await assertNotSymlink(observation.filePath);
 		const existingHandle = await open(observation.filePath, READ_OBJECT_FLAGS);
 		try {
 			const existing = await existingHandle.stat();
@@ -215,6 +244,7 @@ export async function readRecallChunk(
 	offset: number,
 	limits: { readonly maxBytes: number; readonly maxLines: number },
 ): Promise<RecallChunk> {
+	if (!O_NOFOLLOW_SUPPORTED) await assertNotSymlink(path);
 	const handle = await open(path, READ_OBJECT_FLAGS);
 	try {
 		const fileStats = await handle.stat();

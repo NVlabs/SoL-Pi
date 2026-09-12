@@ -293,7 +293,11 @@ describe("evidence-preserving reducer", () => {
 		const localSourcePath = relative(join(runtimeRoot(context), "evidence-preserving-reducer"), sourcePath);
 		expect(localSourcePath.length > 0 && !localSourcePath.startsWith("..") && !isAbsolute(localSourcePath)).toBe(true);
 		expect(await readFile(sourcePath, "utf8")).toBe(body);
-		expect((await stat(sourcePath)).mode & 0o777).toBe(0o600);
+		// NTFS does not surface POSIX permission bits, so the 0o600 mode has
+		// no effect there (#16). Every other assertion in this test still runs.
+		if (process.platform !== "win32") {
+			expect((await stat(sourcePath)).mode & 0o777).toBe(0o600);
+		}
 		expect(events.filter((entry) => entry.kind === "applied")).toHaveLength(1);
 		expect(notify).toHaveBeenCalledTimes(1);
 		expect(notify.mock.calls[0]?.[0]).toMatch(
