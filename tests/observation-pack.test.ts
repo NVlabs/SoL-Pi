@@ -128,6 +128,63 @@ describe("observation pack", () => {
 		expect(await readFile(observationPath(sessionDir, id!), "utf8")).toBe(body);
 	});
 
+	it("keeps send counts isolated across session tree branches", async () => {
+		const sessionDir = await sessionRoot();
+		const body = `branch observation\n${repeatPastThreshold("branch bytes\n")}`;
+		const message = toolResult(body);
+		const pi = observationPackPi();
+		let branch = [{ id: "branch-a" }];
+		const manager = new FakeSessionManager([], SESSION_ID, sessionDir);
+		const context = fakeContext(manager, {
+			sessionManager: {
+				...manager,
+				getBranch: () => branch,
+				getLeafId: () => branch.at(-1)?.id ?? null,
+				getSessionDir: () => sessionDir,
+				getSessionId: () => SESSION_ID,
+			} as never,
+		});
+
+		expect(resultText((await pi.emitContext([message], context))[0]!)).toBe(body);
+		expect(resultText((await pi.emitContext([message], context))[0]!)).toBe(body);
+		expect(resultText((await pi.emitContext([message], context))[0]!)).toMatch(/^\[large tool result replaced/u);
+
+		branch = [{ id: "branch-b" }];
+		expect(resultText((await pi.emitContext([message], context))[0]!)).toBe(body);
+
+		branch = [{ id: "branch-a" }];
+		expect(resultText((await pi.emitContext([message], context))[0]!)).toMatch(/^\[large tool result replaced/u);
+	});
+
+	it("inherits send counts along the active branch but not across sessions", async () => {
+		const sessionDir = await sessionRoot();
+		const body = `branch inheritance\n${repeatPastThreshold("branch bytes\n")}`;
+		const message = toolResult(body);
+		const pi = observationPackPi();
+		let branch = [{ id: "ancestor" }];
+		const manager = new FakeSessionManager([], "session-a", sessionDir);
+		const contextA = fakeContext(manager, {
+			sessionManager: {
+				...manager,
+				getBranch: () => branch,
+				getLeafId: () => branch.at(-1)?.id ?? null,
+				getSessionDir: () => sessionDir,
+				getSessionId: () => "session-a",
+			} as never,
+		});
+
+		await pi.emitContext([message], contextA);
+		await pi.emitContext([message], contextA);
+		branch = [{ id: "ancestor" }, { id: "descendant" }];
+		expect(resultText((await pi.emitContext([message], contextA))[0]!)).toMatch(/^\[large tool result replaced/u);
+
+		const contextB = fakeContext(new FakeSessionManager([], "session-b", sessionDir));
+		expect(resultText((await pi.emitContext([message], contextB))[0]!)).toBe(body);
+		await pi.emit("session_shutdown", { type: "session_shutdown" }, contextA);
+		expect(resultText((await pi.emitContext([message], contextA))[0]!)).toBe(body);
+		expect(resultText((await pi.emitContext([message], contextB))[0]!)).toBe(body);
+	});
+
 	it("announces the first measured placeholder saving only in TUI mode", async () => {
 		vi.useFakeTimers();
 		const sessionDir = await sessionRoot();
