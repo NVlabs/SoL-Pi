@@ -12,7 +12,15 @@ interface PackReport {
 }
 
 function packedFiles(): string[] {
-	const result = spawnSync("npm", ["pack", "--dry-run", "--json"], {
+	// child_process.spawnSync applies no PATHEXT resolution, and current
+	// Node hardening can reject a direct `.cmd` spawn with EINVAL — so on
+	// Windows run the static command line through cmd.exe instead (#16).
+	// All arguments are literals; nothing here interpolates untrusted input.
+	const command =
+		process.platform === "win32"
+			? { file: "cmd.exe", args: ["/d", "/s", "/c", "npm pack --dry-run --json"] }
+			: { file: "npm", args: ["pack", "--dry-run", "--json"] };
+	const result = spawnSync(command.file, command.args, {
 		cwd: process.cwd(),
 		encoding: "utf8",
 	});
