@@ -53,6 +53,28 @@ This preflight does not make every valid SoL-Pi configuration all-enabled. Witho
 
 Trajectory Inspector registers the `/trajectory` command. In TUI mode it shows the most recent execution records above the editor and follows new events as they arrive. Records are also appended to `<session-directory>/sol-pi/<session-id>/trajectory-inspector/events.jsonl` for local inspection. Only metadata is stored: event kind, timestamp, status, model/tool identifiers, byte counts, durations, and correlation ids. Prompts, assistant text, tool arguments, and tool output are intentionally omitted. The inspector is observational and does not modify provider requests or agent decisions.
 
+### Trajectory lifecycle and retention
+
+HTTP callbacks describe individual response attempts. A request stays running
+across retries and ends with the assistant message (or the turn-end fallback).
+Its final status follows the assistant outcome; its detail shows the last HTTP
+status received. Request duration therefore includes retries and streaming.
+
+Compactions are recorded as informational attempts, with a separate success
+record when Pi emits `session_compact`. Pi's public extension API does not
+report failed or cancelled compaction outcomes. An attempt without a success
+record has an unknown outcome; it is not shown as perpetually running, and no
+compaction duration is claimed.
+
+Only the in-memory widget tail is bounded. The local `events.jsonl` file is
+append-only, has no automatic rotation or size cap, and remains until manually
+removed. Resuming a session appends to the same file. Hiding the widget with
+`/trajectory` does not stop recording. To limit further growth, disable
+`trajectoryInspector` before the next Pi invocation. After stopping all Pi
+processes using that session, users may archive or delete its
+`trajectory-inspector` directory independently of Pi's conversation history.
+Plan disk retention explicitly for long-running sessions.
+
 ## Evidence-Preserving Reducer runtime inputs
 
 The release entry supplies the run label and session-derived storage. It uses one configurable model route:

@@ -66,6 +66,54 @@ describe("TrajectoryStore", () => {
 });
 
 describe("trajectory inspector extension", () => {
+	it.each([429, 503])("keeps a logical request open across HTTP %i then 200", async status => {
+		const root = await mkdtemp(join(tmpdir(), "sol-pi-trajectory-retry-"));
+		try {
+			const manager = new FakeSessionManager([], "retry-session", root);
+			const pi = new FakePi(manager);
+			const context = fakeContext(manager);
+			createTrajectoryInspectorExtension()(pi.asExtensionApi());
+			await pi.emit("before_provider_request", {}, context);
+			await pi.emit("after_provider_response", { status }, context);
+			await pi.emit("after_provider_response", { status: 200 }, context);
+			await pi.emit("message_end", { message: assistantMessage("done") }, context);
+			await pi.emit("turn_end", { message: assistantMessage("done"), toolResults: [] }, context);
+			await pi.emit("session_shutdown", { reason: "quit" }, context);
+			const ledger = await readFile(join(root, "sol-pi/retry-session/trajectory-inspector/events.jsonl"), "utf8");
+			const entries = ledger.trim().split("\n").map(line => JSON.parse(line));
+			const request = entries.find(e => e.kind === "request");
+			const updates = entries.filter(e => e.event === "update" && e.sequence === request.sequence);
+			expect(updates.map(e => [e.status, e.detail])).toEqual([
+				["running", `HTTP ${status}`], ["running", "HTTP 200"], ["ok", "HTTP 200"],
+			]);
+		} finally { await rm(root, { recursive: true, force: true }); }
+	});
+
+	it.each([false, true])("does not leave incomplete compaction attempts running; later success=%s", async laterSuccess => {
+		const root = await mkdtemp(join(tmpdir(), "sol-pi-trajectory-compact-"));
+		try {
+			const manager = new FakeSessionManager([], "compact-session", root);
+			const pi = new FakePi(manager);
+			const context = fakeContext(manager);
+			createTrajectoryInspectorExtension()(pi.asExtensionApi());
+			// Failure and cancellation both omit session_compact in the public API.
+			for (let attempt = 0; attempt < 2; attempt++) {
+				await pi.emit("session_before_compact", { reason: "manual" }, context);
+				await pi.emit("agent_settled", {}, context);
+			}
+			if (laterSuccess) {
+				await pi.emit("session_before_compact", { reason: "manual" }, context);
+				await pi.emit("session_compact", { fromExtension: false }, context);
+			}
+			await pi.emit("session_shutdown", { reason: "quit" }, context);
+			const ledger = await readFile(join(root, "sol-pi/compact-session/trajectory-inspector/events.jsonl"), "utf8");
+			const records = ledger.trim().split("\n").map(line => JSON.parse(line)).filter(e => e.kind === "compact");
+			expect(records.filter(e => e.status === "running")).toHaveLength(0);
+			expect(records.filter(e => e.status === "info")).toHaveLength(laterSuccess ? 3 : 2);
+			expect(records.filter(e => e.status === "ok")).toHaveLength(laterSuccess ? 1 : 0);
+		} finally { await rm(root, { recursive: true, force: true }); }
+	});
+
 	it("records live activity, renders a widget, and persists metadata only", async () => {
 		const root = await mkdtemp(join(tmpdir(), "sol-pi-trajectory-test-"));
 		try {
