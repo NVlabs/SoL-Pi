@@ -9,13 +9,15 @@ import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const queueTails = new Map<string, Promise<void>>();
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/gu;
 
-function stripToolPathPrefix(filePath: string): string {
-	return filePath.startsWith("@") ? filePath.slice(1) : filePath;
+function normalizeToolPath(filePath: string): string {
+	const normalized = filePath.replace(UNICODE_SPACES, " ");
+	return normalized.startsWith("@") ? normalized.slice(1) : normalized;
 }
 
 export function resolveToolPath(cwd: string, filePath: string): string {
-	const stripped = stripToolPathPrefix(filePath);
+	const stripped = normalizeToolPath(filePath);
 	// Pi accepts file URLs; the queue and hash guard must use the same target.
 	const expanded = stripped.startsWith("file://") ? fileURLToPath(stripped) : stripped;
 	if (expanded === "~") return homedir();
