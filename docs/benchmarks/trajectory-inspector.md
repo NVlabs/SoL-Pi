@@ -1,5 +1,24 @@
 # Trajectory Inspector validation
 
+## Review follow-up — 2026-09-12
+
+Implementation `efcbef1` addresses provider-internal HTTP retries and incomplete
+compaction attempts. `npm run check` passes 149 tests across 18 files, plus
+typecheck and package validation. All seven SDK lifecycle cases pass, including
+native compaction failure and cancellation, each followed by success. New
+regressions verify 429 → 200 and 503 → 200 on a single logical request.
+
+The same 50-pair benchmark passes with unchanged provider requests and expected
+outputs. Mean elapsed: 7.81 ms disabled, 12.70 ms enabled. Paired overhead:
+mean 4.89 ms, p50 4.47 ms, p95 12.34 ms. Mean ledger size is 9,583 B.
+See [follow-up measurements](trajectory-review-50.csv). These are a fresh run,
+not a controlled speed comparison against the earlier measurements below.
+Request duration now includes retries and streaming; compactions use info
+attempts and separate success events because failure callbacks are unavailable.
+
+The original benchmark and live smoke below remain historical evidence for
+`9f3185c`.
+
 Measured on 2026-09-11, macOS arm64, Node 26.7.0, Pi 0.84.2, implementation
 commit `9f3185c`. This measures observability overhead, not model quality or
 token savings.
