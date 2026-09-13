@@ -134,9 +134,23 @@ export function createObservationPackExtension(): ExtensionFactory {
 			},
 		});
 
+		let reportedUnavailableRuntime = false;
 		pi.on("context", async (event, ctx: ExtensionContext) => {
+			let root: string;
+			try {
+				root = runtimeRoot(ctx);
+			} catch (error) {
+				// Fail open: an ephemeral session (`pi --no-session`) has no persistent
+				// directory to archive into. Raising here would report an extension
+				// error on every provider request instead of leaving the context alone.
+				if (!reportedUnavailableRuntime) {
+					reportedUnavailableRuntime = true;
+					const reason = error instanceof Error ? error.message : String(error);
+					console.error(`[observationpack] disabled for this session: ${reason}`);
+				}
+				return undefined;
+			}
 			const projected = [...event.messages];
-			const root = runtimeRoot(ctx);
 			// How many provider requests each message has already been part of,
 			// counted by the assistant messages that follow it.
 			const priorAssistantCounts = new Array<number>(event.messages.length);
