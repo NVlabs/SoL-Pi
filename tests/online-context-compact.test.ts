@@ -7,9 +7,12 @@ import type { CompactOptions, ExtensionContext } from "@earendil-works/pi-coding
 import { describe, expect, it, vi } from "vitest";
 import {
 	BOUNDARY_COMPACTION_INSTRUCTIONS,
+	boundaryCompactionInstructions,
 	createOnlineContextCompactExtension,
 	DEFAULT_KEEP_RECENT_TOKENS,
+	MAX_PROGRESS_EVIDENCE_BYTES,
 	POST_COMPACTION_PLAN_REMINDER,
+	PROGRESS_EVIDENCE_HEADER,
 	registerOnlineContextCompact,
 	resolveKeepRecentTokens,
 } from "../src/sol-pi/extensions/online-context-compact/index.ts";
@@ -72,6 +75,53 @@ describe("Online Context Compact extension", () => {
 			"session_tree",
 			"turn_end",
 		]);
+	});
+
+	it("keeps the generic instruction when no progress was recorded", () => {
+		expect(boundaryCompactionInstructions([])).toBe(BOUNDARY_COMPACTION_INSTRUCTIONS);
+		expect(
+			boundaryCompactionInstructions([
+				{ stepId: "s1", goal: "wire it up", filesChanged: [], verification: [], decisions: [], nextWork: [] },
+			]),
+		).toContain("- step s1: wire it up");
+	});
+
+	it("omits an empty progress field instead of labelling it", () => {
+		const instructions = boundaryCompactionInstructions([
+			{
+				stepId: "s1",
+				goal: "wire it up",
+				filesChanged: ["src/a.ts"],
+				verification: [],
+				decisions: ["kept it small"],
+				nextWork: ["ship it"],
+			},
+		]);
+
+		expect(instructions).toContain("files changed: src/a.ts");
+		expect(instructions).toContain("decisions: kept it small");
+		expect(instructions).toContain("remaining work: ship it");
+		expect(instructions).not.toContain("verification:");
+	});
+
+	it("bounds the recorded progress and keeps the most recent boundaries", () => {
+		const summaries = Array.from({ length: 40 }, (_, index) => ({
+			stepId: `s${index}`,
+			goal: "g".repeat(500),
+			filesChanged: [`src/file-${index}.ts`],
+			verification: [],
+			decisions: [],
+			nextWork: [],
+		}));
+
+		const instructions = boundaryCompactionInstructions(summaries);
+		const evidence = instructions.slice(instructions.indexOf(PROGRESS_EVIDENCE_HEADER));
+
+		expect(Buffer.byteLength(evidence, "utf8")).toBeLessThanOrEqual(
+			MAX_PROGRESS_EVIDENCE_BYTES + Buffer.byteLength(PROGRESS_EVIDENCE_HEADER, "utf8") + 40,
+		);
+		expect(instructions).toContain("src/file-39.ts");
+		expect(instructions).not.toContain("src/file-0.ts");
 	});
 
 	it("uses Pi's retained-tail default and validates overrides", () => {
@@ -189,7 +239,14 @@ describe("Online Context Compact extension", () => {
 		await vi.waitFor(() => expect(pi.sentMessages).toHaveLength(1));
 
 		expect(compactCalls).toHaveLength(1);
-		expect(compactCalls[0]?.customInstructions).toBe(BOUNDARY_COMPACTION_INSTRUCTIONS);
+		const instructions = compactCalls[0]?.customInstructions ?? "";
+		expect(instructions).toContain(BOUNDARY_COMPACTION_INSTRUCTIONS);
+		// The progress the model recorded at this boundary reaches the summarizer.
+		expect(instructions).toContain(PROGRESS_EVIDENCE_HEADER);
+		expect(instructions).toContain("- step build: build it");
+		expect(instructions).toContain("files changed: src/a.ts");
+		expect(instructions).toContain("verification: tests passed");
+		expect(instructions).toContain("decisions: kept the implementation small");
 		expect(firstSettlementFinished).toBe(false);
 		expect(pi.sentMessages).toEqual([
 			{

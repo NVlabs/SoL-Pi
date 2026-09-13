@@ -36,6 +36,9 @@ export const DEFAULT_KEEP_RECENT_TOKENS = 20_000;
 export const DEFAULT_NATIVE_SUMMARY_TOKEN_ESTIMATE = 1_000;
 export const BOUNDARY_COMPACTION_INSTRUCTIONS =
 	"Preserve completed work, verification results, important decisions, and remaining work.";
+export const PROGRESS_EVIDENCE_HEADER = "Progress recorded at the plan boundaries being summarized:";
+/** Budget for the recorded progress appended to the compaction instructions. */
+export const MAX_PROGRESS_EVIDENCE_BYTES = 4_096;
 export const POST_COMPACTION_PLAN_REMINDER =
 	"Online context compaction finished. The parent task is still active. " +
 	"Before continuing work, call update_plan with a fresh plan for the remaining work.";
@@ -85,6 +88,45 @@ function progressSummary(input: PlanUpdateInput, completedStepId: string): Progr
 		decisions: [...input.progress.decisions],
 		nextWork: input.steps.filter((item) => item.status !== "completed").map((item) => item.goal),
 	};
+}
+
+function progressEvidenceBlock(summary: ProgressSummary): string {
+	const lines = [`- step ${summary.stepId}: ${summary.goal}`];
+	const field = (label: string, values: readonly string[]): void => {
+		if (values.length > 0) lines.push(`  ${label}: ${values.join("; ")}`);
+	};
+	field("files changed", summary.filesChanged);
+	field("verification", summary.verification);
+	field("decisions", summary.decisions);
+	field("remaining work", summary.nextWork);
+	return lines.join("\n");
+}
+
+/**
+ * Hand the summarizer the progress the model recorded at the boundaries being
+ * compacted. `update_plan` asks for exactly the four categories the generic
+ * instruction asks the summarizer to preserve, so the recorded values are the
+ * evidence for that instruction rather than a separate report.
+ *
+ * Newest first under a byte budget: a long session can accumulate more
+ * recorded progress than belongs in one instruction.
+ */
+export function boundaryCompactionInstructions(pendingProgress: readonly ProgressSummary[]): string {
+	const blocks: string[] = [];
+	let usedBytes = 0;
+
+	for (let index = pendingProgress.length - 1; index >= 0; index -= 1) {
+		const summary = pendingProgress[index];
+		if (!summary) continue;
+		const block = progressEvidenceBlock(summary);
+		const blockBytes = Buffer.byteLength(block, "utf8");
+		if (usedBytes + blockBytes > MAX_PROGRESS_EVIDENCE_BYTES) break;
+		blocks.unshift(block);
+		usedBytes += blockBytes;
+	}
+
+	if (blocks.length === 0) return BOUNDARY_COMPACTION_INSTRUCTIONS;
+	return [BOUNDARY_COMPACTION_INSTRUCTIONS, PROGRESS_EVIDENCE_HEADER, ...blocks].join("\n");
 }
 
 function compactionMessageCount(entries: readonly SessionEntry[], startIndex: number, endIndex: number): number {
@@ -344,7 +386,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 						resolve();
 					};
 					context.compact({
-						customInstructions: BOUNDARY_COMPACTION_INSTRUCTIONS,
+						customInstructions: boundaryCompactionInstructions(state.pendingProgress),
 						onComplete: (compaction) => {
 							try {
 								compacted = true;
