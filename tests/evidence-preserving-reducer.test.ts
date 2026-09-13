@@ -225,6 +225,39 @@ describe("evidence-preserving reducer", () => {
 		expect(DIAGNOSTIC_COMMAND.test("rg test src")).toBe(false);
 	});
 
+	it("counts a trailing newline as a line terminator, not an extra line", async () => {
+		const root = await storeRoot();
+
+		expect((await archiveBody(root, "")).lines).toBe(0);
+		expect((await archiveBody(root, "only line\n")).lines).toBe(1);
+		expect((await archiveBody(root, "line1\nline2")).lines).toBe(2);
+		expect((await archiveBody(root, "line1\nline2\n")).lines).toBe(2);
+		expect((await archiveBody(root, "line1\n\n")).lines).toBe(2);
+	});
+
+	it("reports the archived line count the frontier agent can verify", async () => {
+		const root = await storeRoot();
+		const signal = "ERROR target failed";
+		// 401 lines, newline-terminated, as a real command writes it.
+		const body = `${signal}\n${"diagnostic output\n".repeat(400)}`;
+		const { context, pi } = load(
+			root,
+			modelComplete(body, (input) => ({
+				schema: REDUCER_RECEIPT_SCHEMA,
+				source_sha256: sourceHash(input),
+				status: "failure",
+				uncertain: false,
+				evidence: [{ kind: "failure", quote: signal }],
+			})),
+		);
+
+		const result = (await pi.emit("tool_result", bashEvent(body), context)) as {
+			content: { type: string; text: string }[];
+		};
+
+		expect(result.content[0]?.text ?? "").toContain("source_lines=401");
+	});
+
 	it("loads a configured reducer provider/model route", async () => {
 		const root = await storeRoot();
 		const config = loadReducerConfig(root, {

@@ -22,6 +22,21 @@ export function archiveRoot(config: ReducerConfig): string {
 }
 
 /**
+ * Count the lines a reader would see: a trailing newline terminates the last
+ * line instead of opening an empty one. Command output almost always ends with
+ * a newline, so splitting on "\n" would report one line too many in the
+ * reducer prompt and in the receipt the frontier agent reads back.
+ */
+function countLines(body: string): number {
+	if (body.length === 0) return 0;
+	let lines = body.endsWith("\n") ? 0 : 1;
+	for (let index = 0; index < body.length; index++) {
+		if (body.charCodeAt(index) === 10) lines++;
+	}
+	return lines;
+}
+
+/**
  * Store the raw log under its own content hash.
  *
  * Every quote in a receipt is checked against this archive, and the receipt
@@ -47,7 +62,7 @@ export async function archiveBody(root: string, body: string): Promise<ArchiveOb
 		hash,
 		bytes: Buffer.byteLength(body, "utf8"),
 		chars: body.length,
-		lines: body.length === 0 ? 0 : body.split("\n").length,
+		lines: countLines(body),
 		path,
 	};
 }
