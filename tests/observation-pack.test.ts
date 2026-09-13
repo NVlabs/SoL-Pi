@@ -325,6 +325,31 @@ describe("observation pack", () => {
 		expect(result).toMatchObject({ details: { patch: "preserved" }, isError: false });
 	});
 
+	it("packs a payload that only mentions the receipt prefix inside a line", async () => {
+		const sessionDir = await sessionRoot();
+		const large = repeatPastThreshold("build log\n");
+		// The exemption is for a receipt, not for any line that names one.
+		const mention = toolResult(`grep -n sol_pi_evidence_receipt_v1 src\n${large}`);
+		const trailing = toolResult(`sol_pi_evidence_receipt_v1 (from an earlier turn)\n${large}`, {
+			toolCallId: "call-2",
+		});
+
+		for (const message of [mention, trailing]) {
+			const projected = await project(observationPackPi(), message, sessionDir, 3);
+			expect(projected[2]).toMatch(/^\[large tool result replaced/u);
+		}
+	});
+
+	it("counts lines the same way for astral characters", async () => {
+		const sessionDir = await sessionRoot();
+		// One surrogate pair per line: a UTF-16 scan and a code-point scan must agree.
+		const body = repeatPastThreshold("𝄞 clef line\n");
+		const projected = await project(observationPackPi(), toolResult(body), sessionDir, 3);
+
+		const reported = Number((projected[2] ?? "").match(/original_lines: (\d+)/u)?.[1]);
+		expect(reported).toBe(body.split("\n").length - 1);
+	});
+
 	it("passes through errors, mixed content, and reducer receipts", async () => {
 		const sessionDir = await sessionRoot();
 		const large = "x".repeat(THRESHOLD_BYTES + 100);
