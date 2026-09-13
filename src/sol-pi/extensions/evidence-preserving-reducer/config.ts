@@ -26,7 +26,14 @@ export const DIAGNOSTIC_COMMAND =
 	/(?:^|[;&|()\s])(?:lake\s+build|lake\s+env\s+lean|lean|coq|cargo(?:\s+(?:build|test|check))?|zig\s+build|pytest|python(?:3)?\s+-m\s+(?:pytest|unittest|py_compile)|ctest|cmake\s+--build|ninja|make|npm\s+test|pnpm\s+test|yarn\s+test|go\s+test|bazel\s+test)(?:\s|$)/i;
 
 export const FAILURE_SIGNAL = /error|failed|failure|fatal|exception|panic|timeout|unsolved|type mismatch|assert/i;
-export const LIKELY_SECRET = /(?:api[_-]?key|authorization|bearer|access[_-]?token|secret)[^\n]{0,32}[=:][^\n]+/i;
+/**
+ * Precaution, not a complete secret scanner: three shapes that appear in real
+ * build and test output. The password family uses a tight window so ordinary
+ * identifiers such as `test_password_reset` do not read as an assignment, and
+ * the PEM header needs no assignment at all.
+ */
+export const LIKELY_SECRET =
+	/(?:api[_-]?key|authorization|bearer|access[_-]?token|secret)[^\n]{0,32}[=:][^\n]+|(?:password|passwd|passphrase|private[ _-]?key)["'\s]{0,4}[=:][^\n]+|-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----/i;
 
 export interface ReducerConfig {
 	readonly maxChars: number;
