@@ -418,6 +418,26 @@ describe("evidence-preserving reducer", () => {
 		).toBe(true);
 	});
 
+	it.each(["failure", "fatal"])("fails open when a benign quote is labeled %s", async (kind) => {
+		const root = await storeRoot();
+		const body = `build started\nfatal: missing symbol x\n${"diagnostic output\n".repeat(400)}`;
+		const { context, manager, pi } = load(
+			root,
+			modelComplete(body, (input) => ({
+				schema: REDUCER_RECEIPT_SCHEMA,
+				source_sha256: sourceHash(input),
+				status: "failure",
+				uncertain: false,
+				evidence: [{ kind, quote: "build started" }],
+			})),
+		);
+
+		expect(await pi.emit("tool_result", bashEvent(body), context)).toBeUndefined();
+		expect(manager.customEntryData()).toContainEqual(
+			expect.objectContaining({ kind: "fallback", reason: "missing-failure-evidence" }),
+		);
+	});
+
 	it("fails open when Pi cannot complete the nested model call", async () => {
 		const root = await storeRoot();
 		const body = `ERROR real failure\n${"x".repeat(5000)}`;

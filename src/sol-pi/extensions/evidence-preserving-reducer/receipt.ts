@@ -136,7 +136,9 @@ export function validateReceipt(
 	if (
 		isError &&
 		FAILURE_SIGNAL.test(body) &&
-		!evidence.some((item) => item.kind === "fatal" || item.kind === "failure")
+		!evidence.some(
+			(item) => (item.kind === "fatal" || item.kind === "failure") && FAILURE_SIGNAL.test(item.quote),
+		)
 	) {
 		return { ok: false, reason: "missing-failure-evidence" };
 	}
