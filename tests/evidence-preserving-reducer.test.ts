@@ -263,6 +263,17 @@ describe("evidence-preserving reducer", () => {
 		expect(manager.customEntryData()).toHaveLength(0);
 	});
 
+	it("admits Cargo global options before the diagnostic subcommand", () => {
+		for (const command of [
+			"cargo --locked test",
+			"cargo --color always check",
+			"cargo +nightly --offline build",
+			"cargo --config net.offline=true test",
+		]) {
+			expect([command, DIAGNOSTIC_COMMAND.test(command)]).toEqual([command, true]);
+		}
+	});
+
 	it("loads a configured reducer provider/model route", async () => {
 		const root = await storeRoot();
 		const config = loadReducerConfig(root, {

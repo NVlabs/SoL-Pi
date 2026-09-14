@@ -23,7 +23,7 @@ export const DEFAULT_REDUCER_PROVIDER = ["openai", "codex"].join("-");
 export const DEFAULT_REDUCER_MODEL = ["gpt-5.6", "luna"].join("-");
 
 export const DIAGNOSTIC_COMMAND =
-	/(?:^|[;&|()\s])(?:lake\s+build|lake\s+env\s+lean|lean|coq|cargo(?:\s+\+[\w.-]+)?\s+(?:build|test|check)|zig\s+build|pytest|python(?:3)?\s+-m\s+(?:pytest|unittest|py_compile)|ctest|cmake\s+--build|ninja|make|npm\s+test|pnpm\s+test|yarn\s+test|go\s+test|bazel\s+test)(?:\s|$)/i;
+	/(?:^|[;&|()\s])(?:lake\s+build|lake\s+env\s+lean|lean|coq|cargo(?:\s+\+[\w.-]+)?(?:\s+(?:--locked|--offline|--frozen|--color(?:\s+[^\s]+)?|--config(?:\s+[^\s]+)?))*\s+(?:build|test|check)|zig\s+build|pytest|python(?:3)?\s+-m\s+(?:pytest|unittest|py_compile)|ctest|cmake\s+--build|ninja|make|npm\s+test|pnpm\s+test|yarn\s+test|go\s+test|bazel\s+test)(?:\s|$)/i;
 
 export const FAILURE_SIGNAL = /error|failed|failure|fatal|exception|panic|timeout|unsolved|type mismatch|assert/i;
 export const LIKELY_SECRET = /(?:api[_-]?key|authorization|bearer|access[_-]?token|secret)[^\n]{0,32}[=:][^\n]+/i;
