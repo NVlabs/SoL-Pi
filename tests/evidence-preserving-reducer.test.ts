@@ -225,6 +225,55 @@ describe("evidence-preserving reducer", () => {
 		expect(DIAGNOSTIC_COMMAND.test("rg test src")).toBe(false);
 	});
 
+	it("admits only the diagnostic cargo subcommands", () => {
+		for (const command of [
+			"cargo build",
+			"cargo test",
+			"cargo check",
+			"cargo build --release",
+			"cargo +nightly test",
+			"cd repo && cargo build",
+		]) {
+			expect([command, DIAGNOSTIC_COMMAND.test(command)]).toEqual([command, true]);
+		}
+		for (const command of [
+			"cargo",
+			"cargo fmt",
+			"cargo clippy",
+			"cargo run",
+			"cargo publish",
+			"cargo login",
+			"cargo install cargo-nextest",
+		]) {
+			expect([command, DIAGNOSTIC_COMMAND.test(command)]).toEqual([command, false]);
+		}
+	});
+
+	it("leaves a non-diagnostic cargo result untouched", async () => {
+		const root = await storeRoot();
+		const body = `Updating crates.io index\n${"compiling dependency\n".repeat(400)}`;
+		const complete = vi.fn();
+		const { context, manager, pi } = load(root, complete as unknown as Complete);
+
+		const event = bashEvent(body, { input: { command: "cargo publish" }, isError: false });
+		const result = await pi.emit("tool_result", event, context);
+
+		expect(result).toBeUndefined();
+		expect(complete).not.toHaveBeenCalled();
+		expect(manager.customEntryData()).toHaveLength(0);
+	});
+
+	it("admits Cargo global options before the diagnostic subcommand", () => {
+		for (const command of [
+			"cargo --locked test",
+			"cargo --color always check",
+			"cargo +nightly --offline build",
+			"cargo --config net.offline=true test",
+		]) {
+			expect([command, DIAGNOSTIC_COMMAND.test(command)]).toEqual([command, true]);
+		}
+	});
+
 	it("loads a configured reducer provider/model route", async () => {
 		const root = await storeRoot();
 		const config = loadReducerConfig(root, {
