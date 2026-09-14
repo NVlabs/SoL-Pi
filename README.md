@@ -147,6 +147,130 @@ node scripts/check-pi-compat.mjs
 
 `npm run check` covers TypeScript, the complete test suite, and package inspection. The development dependency set is pinned to Pi 0.84.2; runtime Pi packages remain peer dependencies so Pi owns their installation and upgrades.
 
+## Fixed Issues
+
+SoL-Pi has identified and resolved several issues through systematic testing, cross-platform validation, and user feedback. Below is a comprehensive record of each issue, how it was discovered, and the solution implemented.
+
+### 1. Action Fusion mishandled `file://` URLs
+
+**Issue:** When Pi passed a `file://` URL as the target for an edit or write operation, Action Fusion treated it as a relative file path. This caused the per-file queue key and the pre-`then_run` hash guard to mismatch, so the validation command would not run or would run against the wrong file.
+
+**How it was found:** Discovered through automated testing when Action Fusion tests failed with percent-encoded filenames and Pi's optional `@` prefix on file URLs. The issue was specific to how Node's path resolution handled URL-encoded strings.
+
+**Solution:** Added `fileURLToPath()` decoding in `resolveToolPath()` for targets starting with `file://` after stripping Pi's optional `@` prefix. This ensures file URLs, including percent-encoded filenames, align with the file handled by the built-in mutation tool.
+
+**Files changed:**
+- `src/sol-pi/extensions/action-fusion/file-queue.ts`
+- `tests/action-fusion-paths.test.ts` (new test file)
+- `docs/compatibility.md` (documentation)
+
+**Reference:** PR #4, commit `6f74efc`
+
+### 2. Action Fusion renderer test was path-dependent
+
+**Issue:** The Action Fusion renderer test asserted that non-fused renders never contain "SoL-Pi", but the checkout directory name or an OSC 8 hyperlink in the path could contain the repo name, causing false test failures.
+
+**How it was found:** Tests failed when the repository was cloned into a directory named "SoL-Pi" or when the path contained hyperlink metadata with the repo name.
+
+**Solution:** Changed assertions to specifically check for the badge text (`⚡ SoL-Pi · Action Fusion` / `Money saved · 1 model round-trip avoided`) rather than the string "SoL-Pi" anywhere in the output. Added parameterized tests for different checkout names and paths.
+
+**Files changed:**
+- `tests/action-fusion.test.ts`
+
+**Reference:** PR #3, commit `c0f7521`
+
+### 3. ObservationPack failed without persistent session directory
+
+**Issue:** When Pi ran without a persistent session directory, ObservationPack threw an exception when trying to create the storage root, breaking context projection entirely.
+
+**How it was found:** Encountered when testing SoL-Pi in environments where Pi doesn't provide a persistent session directory (e.g., temporary sessions or certain containerized environments).
+
+**Solution:** Wrapped `runtimeRoot(ctx)` in try/catch and implemented fail-open behavior. When no persistent session directory exists, ObservationPack returns the context unchanged with an `[observationpack] fail-open:` log message, rather than throwing an exception.
+
+**Files changed:**
+- `src/sol-pi/extensions/observation-pack/index.ts`
+
+### 4. ObservationPack symlink protection didn't work on Windows
+
+**Issue:** The `O_NOFOLLOW` constant used for symlink protection is undefined on Windows, causing the observation file reading to fail or behave unexpectedly on Windows systems.
+
+**How it was found:** Cross-platform testing on Windows revealed that `O_NOFOLLOW` is platform-specific and not available on Windows.
+
+**Solution:** Implemented portable symlink protection using:
+- `constants.O_NOFOLLOW ?? 0` (fallback to 0 on Windows)
+- Added `regularNonSymlinkFile()` lstat checks
+- Synthesized `ELOOP` error for parity with Unix behavior
+- Symlink-dependent tests marked with `it.skipIf(isWindows)`
+
+**Files changed:**
+- `src/sol-pi/extensions/observation-pack/observation.ts`
+- `tests/observation-pack.test.ts`
+
+### 5. npm pack test broke with npm ≥ 12
+
+**Issue:** npm version 12 changed the output format of `npm pack --dry-run` from an array to a single object keyed by package name, causing test assertions to fail.
+
+**How it was found:** Tests passed on npm 10/11 but failed on npm 12+ due to the changed JSON structure.
+
+**Solution:** Updated test to handle both array and object report shapes. Also added `npm.cmd` support for Windows compatibility.
+
+**Files changed:**
+- `tests/package.test.ts`
+
+### 6. No CI validation on Windows/macOS
+
+**Issue:** The repository only had CI configured for Linux, so platform-specific issues (like the Windows symlink problem and npm.cmd handling) weren't caught until manual testing.
+
+**How it was found:** When fixing the Windows-specific issues, it became clear that cross-platform validation wasn't automated.
+
+**Solution:** Added `.github/workflows/ci.yml` that runs the full validation suite on ubuntu, macOS, and Windows with Node 22. The workflow runs:
+- `npm ci --ignore-scripts`
+- `npm run check` (typecheck + tests + package inspection)
+- `npm audit --audit-level=high`
+- `scripts/check-pi-compat.mjs`
+
+**Files changed:**
+- `.github/workflows/ci.yml`
+
+### 7. Dependency security vulnerabilities
+
+**Issue:** Transitive dependencies had known vulnerabilities (CVEs) that needed to be pinned to safe versions.
+
+**How it was found:** `npm audit --audit-level=high` flagged vulnerabilities in `nanoid`, `postcss`, and `protobufjs`.
+
+**Solution:** Added overrides in `package.json` to pin safe versions:
+- `nanoid`: `3.3.18`
+- `postcss`: `8.5.26`
+- `protobufjs`: `7.6.5`
+
+Also updated `vitest` from pinned `4.1.9` to range `^4.1.11` for compatibility.
+
+**Files changed:**
+- `package.json`
+- `package-lock.json`
+
+## Issue Discovery Process
+
+Issues were discovered through multiple channels:
+
+1. **Automated testing** - Running `npm run check` and `npx vitest run` across different environments
+2. **Cross-platform validation** - Testing on Linux, macOS, and Windows
+3. **npm version compatibility** - Testing with different npm versions (10, 11, 12+)
+4. **Security auditing** - Running `npm audit --audit-level=high` to catch dependency vulnerabilities
+5. **User feedback** - Reports from users running SoL-Pi in various environments
+6. **Edge case analysis** - Examining how Pi passes file URLs and handles different session types
+
+## Issue Resolution Process
+
+For each issue discovered:
+
+1. **Reproduction** - Created minimal test cases to reproduce the issue
+2. **Root cause analysis** - Identified the specific code path causing the failure
+3. **Fix implementation** - Made the minimum necessary changes to resolve the issue
+4. **Regression testing** - Added test cases to prevent future regressions
+5. **Documentation** - Updated relevant docs (compatibility.md, agents-install.md)
+6. **Cross-platform verification** - Ensured the fix works on all supported platforms
+
 ## Project Status
 
 SoL-Pi is developed and maintained by NVIDIA as a standalone extension for Pi.

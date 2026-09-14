@@ -18,6 +18,9 @@ import { componentText, FakePi, FakeSessionManager, fakeContext, plainTheme } fr
 
 const roots: string[] = [];
 const SESSION_ID = "session-a";
+// Creating filesystem symlinks needs privileges that Windows runners do not
+// grant by default; the closed-by-lstat checks run everywhere else.
+const isWindows = process.platform === "win32";
 
 afterEach(async () => {
 	vi.useRealTimers();
@@ -240,7 +243,7 @@ describe("observation pack", () => {
 		expect(projected[2]).toMatch(new RegExp(`id: ${id}`, "u"));
 	});
 
-	it("fails recall closed when an object path is replaced by a symlink", async () => {
+	it.skipIf(isWindows)("fails recall closed when an object path is replaced by a symlink", async () => {
 		const sessionDir = await sessionRoot();
 		const body = `stored\n${repeatPastThreshold("observation bytes\n")}`;
 		const message = toolResult(body);
@@ -285,7 +288,7 @@ describe("observation pack", () => {
 		expect(Buffer.from(recalled, "utf8")).toEqual(Buffer.from(body, "utf8"));
 	});
 
-	it("fails storage closed when the observation directory is a symlink", async () => {
+	it.skipIf(isWindows)("fails storage closed when the observation directory is a symlink", async () => {
 		const sessionDir = await sessionRoot();
 		const targetDir = await sessionRoot();
 		await mkdir(join(sessionDir, "sol-pi", SESSION_ID, "observation-pack"), { recursive: true });
@@ -323,6 +326,15 @@ describe("observation pack", () => {
 		expect(resultText(result!)).toMatch(/Successfully wrote 12 bytes to target\.ts/u);
 		expect(resultText(result!)).toMatch(/\[then_run:succeeded\]/u);
 		expect(result).toMatchObject({ details: { patch: "preserved" }, isError: false });
+	});
+
+	it("fails open when the session directory is not persistent", async () => {
+		const body = "x".repeat(THRESHOLD_BYTES + 100);
+		const message = toolResult(body);
+		const pi = observationPackPi();
+		const context = fakeContext(new FakeSessionManager([], SESSION_ID, ""));
+
+		expect(await pi.emitContext([message], context)).toEqual([message]);
 	});
 
 	it("passes through errors, mixed content, and reducer receipts", async () => {

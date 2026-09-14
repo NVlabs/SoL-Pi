@@ -60,6 +60,8 @@ pi --version
 
 Require `pi --version` to report `0.84.2`.
 
+The Phase 1 and install commands below run unchanged in bash, PowerShell, and cmd on Linux, macOS, and Windows. On Windows the `npm` and `pi` executables are `.cmd` shims; the same commands resolve them in the usual shells. Replace the `/absolute/path/to/SoL-Pi` placeholder with the platform's absolute path (PowerShell and cmd accept `C:\...` paths as written), and quote the path when it contains spaces.
+
 For a project-local registration, run this from `target_project` and substitute the resolved absolute `sol_pi_root`:
 
 ```bash

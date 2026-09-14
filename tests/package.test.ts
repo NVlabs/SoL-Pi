@@ -12,13 +12,17 @@ interface PackReport {
 }
 
 function packedFiles(): string[] {
-	const result = spawnSync("npm", ["pack", "--dry-run", "--json"], {
+	const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+	const result = spawnSync(npmCommand, ["pack", "--dry-run", "--json"], {
 		cwd: process.cwd(),
 		encoding: "utf8",
 	});
 	if (result.status !== 0) throw new Error(result.stderr || result.stdout);
-	const report = JSON.parse(result.stdout) as PackReport[];
-	return report[0]?.files.map((file) => file.path) ?? [];
+	// npm >= 12 reports a single object keyed by package name; earlier npm
+	// versions reported an array of per-package objects.
+	const report = JSON.parse(result.stdout) as PackReport[] | Record<string, PackReport>;
+	const packages = Array.isArray(report) ? report : Object.values(report);
+	return packages.flatMap((pkg) => pkg.files.map((file) => file.path));
 }
 
 describe("published package", () => {
