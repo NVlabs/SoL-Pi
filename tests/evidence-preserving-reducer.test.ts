@@ -246,6 +246,8 @@ describe("evidence-preserving reducer", () => {
 		for (const line of [
 			"-----BEGIN CERTIFICATE-----",
 			"FAILED tests/test_auth.py::test_password_reset",
+			"assert password == expected",
+			"AssertionError: password = expected",
 			"assert password_hash == expected_hash",
 			"  password_policy_enabled = True",
 			"E   AssertionError: expected 4 but received 5",

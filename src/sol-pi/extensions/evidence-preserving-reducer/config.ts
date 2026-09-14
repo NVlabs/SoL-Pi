@@ -33,7 +33,7 @@ export const FAILURE_SIGNAL = /error|failed|failure|fatal|exception|panic|timeou
  * the PEM header needs no assignment at all.
  */
 export const LIKELY_SECRET =
-	/(?:api[_-]?key|authorization|bearer|access[_-]?token|secret)[^\n]{0,32}[=:][^\n]+|(?:password|passwd|passphrase|private[ _-]?key)["'\s]{0,4}[=:][^\n]+|-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----/i;
+	/(?:api[_-]?key|authorization|bearer|access[_-]?token|secret)[^\n]{0,32}(?::|=(?!=))[^\n]+|(?:^|\n)(?![^\n]*(?:\bassert\b|AssertionError:)[^\n]*\b(?:password|passwd|passphrase|private[ _-]?key)\b)[^\n]*?(?:\b(?:password|passwd|passphrase|private[ _-]?key)\b|\b[A-Z][A-Z0-9_]*(?:PASSWORD|PASSWD|PASSPHRASE)\b)["'\s]{0,4}(?::|=(?!=))[^\n]+|-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----/i;
 
 export interface ReducerConfig {
 	readonly maxChars: number;
