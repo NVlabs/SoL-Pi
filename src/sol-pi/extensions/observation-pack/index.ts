@@ -135,8 +135,18 @@ export function createObservationPackExtension(): ExtensionFactory {
 		});
 
 		pi.on("context", async (event, ctx: ExtensionContext) => {
+			let root: string;
+			try {
+				root = runtimeRoot(ctx);
+			} catch (error) {
+				// Fail open: without a persistent session directory the
+				// observation state cannot be keyed safely, so leave the
+				// context unchanged.
+				const reason = error instanceof Error ? error.message : String(error);
+				console.error(`[observationpack] fail-open: ${reason}`);
+				return { messages: event.messages };
+			}
 			const projected = [...event.messages];
-			const root = runtimeRoot(ctx);
 			// How many provider requests each message has already been part of,
 			// counted by the assistant messages that follow it.
 			const priorAssistantCounts = new Array<number>(event.messages.length);

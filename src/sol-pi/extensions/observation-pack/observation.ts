@@ -18,8 +18,30 @@ export const PLACEHOLDER_EXCERPT_BYTES = 1024;
 
 const CHARS_PER_TOKEN = 4;
 const OBSERVATION_ID_PATTERN = /^obs_[a-f0-9]{24}$/u;
-const READ_OBJECT_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW;
-const CREATE_OBJECT_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
+// O_NOFOLLOW is a POSIX flag; Node leaves it undefined on Windows, where
+// creation with O_EXCL plus the explicit lstat checks below close the same
+// symlink holes.
+const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
+const READ_OBJECT_FLAGS = constants.O_RDONLY | NOFOLLOW;
+const CREATE_OBJECT_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW;
+
+/**
+ * Portable stand-in for the ELOOP a POSIX open with O_NOFOLLOW raises on a
+ * symlink. Windows has no O_NOFOLLOW, so refusing the link explicitly keeps
+ * recall closed on every platform.
+ */
+function symlinkLoopError(path: string): NodeJS.ErrnoException {
+	const error = new Error(`ELOOP: too many levels of symbolic links, open '${path}'`) as NodeJS.ErrnoException;
+	error.code = "ELOOP";
+	error.path = path;
+	error.syscall = "open";
+	return error;
+}
+
+async function regularNonSymlinkFile(path: string): Promise<boolean> {
+	const stats = await lstat(path);
+	return stats.isFile() && !stats.isSymbolicLink();
+}
 
 /**
  * Receipts from the evidence-preserving reducer are already a reduction of a
@@ -134,12 +156,12 @@ export async function ensureStored(observation: Observation): Promise<void> {
 		await handle.writeFile(observation.text, { encoding: "utf8" });
 	} catch (error) {
 		if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
+		if (!(await regularNonSymlinkFile(observation.filePath))) {
+			throw new Error(`Content-addressed observation is not a regular file for ${observation.id}`);
+		}
 		const existingHandle = await open(observation.filePath, READ_OBJECT_FLAGS);
 		try {
 			const existing = await existingHandle.stat();
-			if (!existing.isFile()) {
-				throw new Error(`Content-addressed observation is not a regular file for ${observation.id}`);
-			}
 			if (existing.size !== observation.bytes) {
 				throw new Error(`Content-addressed observation size mismatch for ${observation.id}`);
 			}
@@ -215,10 +237,11 @@ export async function readRecallChunk(
 	offset: number,
 	limits: { readonly maxBytes: number; readonly maxLines: number },
 ): Promise<RecallChunk> {
+	if (!(await regularNonSymlinkFile(path))) throw symlinkLoopError(path);
 	const handle = await open(path, READ_OBJECT_FLAGS);
 	try {
 		const fileStats = await handle.stat();
-		if (!fileStats.isFile()) throw new Error("Stored observation is not a regular file");
+		if (!fileStats.isFile()) throw symlinkLoopError(path);
 		if (offset > fileStats.size) throw new Error(`Offset ${offset} exceeds observation size ${fileStats.size}`);
 
 		const available = Math.max(0, fileStats.size - offset);
