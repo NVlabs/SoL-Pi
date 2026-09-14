@@ -151,4 +151,19 @@ describe("Action Fusion file URL paths", () => {
 		expect(mutations).toBe(0);
 		expect(commands).toBe(0);
 	});
+
+	it("fails with a tool error, not a TypeError, when path is missing", async () => {
+		const cwd = await createTempDir();
+		let mutations = 0;
+		let commands = 0;
+		const tools = loadTools({
+			writeOptions: { operations: { mkdir: async () => {}, writeFile: async () => { mutations++; } } },
+			bashOptions: { operations: { exec: async () => { commands++; return { exitCode: 0 }; } } },
+		});
+		await expect(
+			tools.get("write")!.execute("missing-path", { content: "unused", then_run: { command: "nope" } } as never, undefined, undefined, context(cwd)),
+		).rejects.toThrow(/`path` must be the target file path/);
+		expect(mutations).toBe(0);
+		expect(commands).toBe(0);
+	});
 });
