@@ -1,0 +1,94 @@
+/* Compact project resources in the hero. */
+.hero-resources {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  column-gap: 24px;
+  row-gap: 14px;
+  margin-top: 26px;
+}
+
+.hero-resource {
+  position: relative;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  height: 44px;
+  padding: 8px 0 14px;
+  color: var(--muted);
+  font-family: var(--font-geist-sans), Arial, sans-serif;
+  text-decoration: none;
+}
+
+.hero-resource-primary {
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 20px;
+  transition: color .2s ease;
+}
+
+.hero-resource-secondary {
+  color: var(--quiet);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 20px;
+}
+
+.hero-resource-separator {
+  color: var(--quiet);
+  font-size: 13px;
+}
+
+.hero-resource-arrow {
+  display: inline-block;
+  font-size: 14px;
+  transition: transform .2s ease;
+}
+
+.hero-resource--pending .hero-resource-primary {
+  color: #777c81;
+}
+
+.hero-resource--github::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 8px;
+  width: 100%;
+  height: 1px;
+  background: var(--nv-green-dark);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform .2s ease;
+}
+
+.hero-resource--github:is(:hover, :focus-visible) .hero-resource-primary {
+  color: var(--nv-green-dark);
+}
+
+.hero-resource--github:is(:hover, :focus-visible) .hero-resource-arrow {
+  transform: translate(2px, -2px);
+}
+
+.hero-resource--github:is(:hover, :focus-visible)::after {
+  transform: scaleX(1);
+}
+
+.hero-resource--github:focus-visible {
+  outline: 2px solid var(--nv-green);
+  outline-offset: 7px;
+}
+
+@media (max-width: 400px) {
+  .hero-resources {
+    column-gap: 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-resource-primary,
+  .hero-resource-arrow,
+  .hero-resource--github::after {
+    transition: none;
+  }
+}
