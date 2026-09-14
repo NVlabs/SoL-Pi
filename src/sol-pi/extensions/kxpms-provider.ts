@@ -17,18 +17,34 @@
  * idempotent: re-registering the same id is a safe upsert.
  */
 
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, ModelRegistry } from "@earendil-works/pi-coding-agent";
 
 const DEFAULT_BASE_URL = "https://llm.kxpms.cn/v1";
 export const KXPMS_PROVIDER_ID = "kxpms";
 
+/** Structural subset of `ProviderConfigInput["models"][number]` we need. */
+interface KxpmsModelInput {
+	readonly id: string;
+	readonly name: string;
+	readonly reasoning: boolean;
+	readonly input: readonly ("text" | "image")[];
+	readonly cost: {
+		readonly input: number;
+		readonly output: number;
+		readonly cacheRead: number;
+		readonly cacheWrite: number;
+	};
+	readonly contextWindow: number;
+	readonly maxTokens: number;
+}
+
 /** Default model catalog observed on the kxpms gateway. */
-const KXPMS_MODELS = [
+const KXPMS_MODELS: readonly KxpmsModelInput[] = [
 	{
 		id: "minimax-m3",
 		name: "MiniMax M3 (kxpms)",
 		reasoning: true,
-		input: ["text"] as ("text" | "image")[],
+		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 200_000,
 		maxTokens: 32_000,
@@ -37,7 +53,7 @@ const KXPMS_MODELS = [
 		id: "claude-sonnet-5",
 		name: "Claude Sonnet 5 (kxpms)",
 		reasoning: true,
-		input: ["text"] as ("text" | "image")[],
+		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 200_000,
 		maxTokens: 32_000,
@@ -46,7 +62,7 @@ const KXPMS_MODELS = [
 		id: "claude-opus-5",
 		name: "Claude Opus 5 (kxpms)",
 		reasoning: true,
-		input: ["text"] as ("text" | "image")[],
+		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 200_000,
 		maxTokens: 32_000,
@@ -55,7 +71,7 @@ const KXPMS_MODELS = [
 		id: "gpt-5.5",
 		name: "GPT-5.5 (kxpms)",
 		reasoning: true,
-		input: ["text"] as ("text" | "image")[],
+		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 400_000,
 		maxTokens: 128_000,
@@ -64,12 +80,12 @@ const KXPMS_MODELS = [
 		id: "deepseek-chat-v3.1",
 		name: "DeepSeek V3.1 (kxpms)",
 		reasoning: false,
-		input: ["text"] as ("text" | "image")[],
+		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 128_000,
 		maxTokens: 32_000,
 	},
-];
+] as const;
 
 /**
  * Register the `kxpms` provider into the ambient Pi ModelRegistry.
@@ -85,23 +101,17 @@ export function registerKxpmsProvider(context: ExtensionContext): boolean {
 	if (!apiKey) return false;
 
 	const baseUrl = (process.env.KXPMS_BASE_URL ?? DEFAULT_BASE_URL).trim() || DEFAULT_BASE_URL;
-
-	const registry = context.modelRegistry as unknown as {
-		getRegisteredProviderIds?: () => readonly string[];
-		registerProvider?: (providerName: string, config: unknown) => void;
-	};
+	const registry: ModelRegistry = context.modelRegistry;
 
 	// Respect an operator-provided registration (e.g. from ~/.pi/agent/models.json).
-	const alreadyRegistered = registry.getRegisteredProviderIds?.().includes(KXPMS_PROVIDER_ID) ?? false;
-	if (alreadyRegistered) return false;
-	if (typeof registry.registerProvider !== "function") return false;
+	if (registry.getRegisteredProviderIds().includes(KXPMS_PROVIDER_ID)) return false;
 
 	registry.registerProvider(KXPMS_PROVIDER_ID, {
 		name: "KXPMS LLM Gateway",
 		baseUrl,
 		apiKey,
 		api: "openai-completions",
-		models: KXPMS_MODELS,
+		models: KXPMS_MODELS.map((m) => ({ ...m, input: [...m.input] })),
 	});
 	return true;
 }
