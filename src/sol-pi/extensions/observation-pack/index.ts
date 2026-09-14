@@ -134,7 +134,7 @@ export function createObservationPackExtension(): ExtensionFactory {
 			},
 		});
 
-		let reportedUnavailableRuntime = false;
+		const reportedUnavailableRuntimes = new WeakSet<object>();
 		pi.on("context", async (event, ctx: ExtensionContext) => {
 			let root: string;
 			try {
@@ -143,8 +143,8 @@ export function createObservationPackExtension(): ExtensionFactory {
 				// Fail open: an ephemeral session (`pi --no-session`) has no persistent
 				// directory to archive into. Raising here would report an extension
 				// error on every provider request instead of leaving the context alone.
-				if (!reportedUnavailableRuntime) {
-					reportedUnavailableRuntime = true;
+				if (!reportedUnavailableRuntimes.has(ctx.sessionManager)) {
+					reportedUnavailableRuntimes.add(ctx.sessionManager);
 					const reason = error instanceof Error ? error.message : String(error);
 					console.error(`[observationpack] disabled for this session: ${reason}`);
 				}
