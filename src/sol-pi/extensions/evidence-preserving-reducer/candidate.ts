@@ -16,7 +16,7 @@ const THEN_RUN_FAILED = "[then_run:failed]";
 
 export interface ReducibleToolResult {
 	readonly command: string;
-	/** Undefined means the full log exceeds the character limit, not a usable preview. */
+	/** Undefined means a complete, stable log within the limit could not be obtained. */
 	readonly body: string | undefined;
 	/** Put the receipt back where the raw output was, leaving the rest of the result alone. */
 	readonly projectReceipt: (receipt: string) => ToolResultEvent["content"];
@@ -34,13 +34,14 @@ export function detailsFullOutputPath(details: unknown): string | undefined {
 	return typeof value === "string" ? value : undefined;
 }
 
-async function safePiBashTempPath(path: string | undefined): Promise<boolean> {
+async function safePiBashTempPath(path: string | undefined): Promise<boolean | undefined> {
 	if (!path || !/^pi-bash-[^/\\]+\.log$/u.test(basename(path))) return false;
 	try {
 		const [candidate, root, status] = await Promise.all([realpath(path), realpath(tmpdir()), lstat(path)]);
 		return status.isFile() && !status.isSymbolicLink() && dirname(candidate) === root;
 	} catch {
-		return false;
+		// Unavailable Pi output is not proof that its preview is complete.
+		return undefined;
 	}
 }
 
@@ -52,20 +53,19 @@ async function exactBodyFromInline(inline: string, details: unknown, maxChars: n
 	const detailsPath = detailsFullOutputPath(details);
 	const inlineMatch = inline.match(/Full output:\s*([^\]\r\n]+)/u);
 	const candidate = detailsPath ?? inlineMatch?.[1]?.trim();
-	if (!candidate || !(await safePiBashTempPath(candidate))) return inline;
-	let sourceOverLimit = false;
+	if (!candidate) return inline;
+	const safePath = await safePiBashTempPath(candidate);
+	if (safePath === false) return inline;
+	if (safePath === undefined) return undefined;
 	try {
 		const handle = await open(candidate, constants.O_RDONLY | constants.O_NOFOLLOW);
 		try {
 			const stats = await handle.stat();
-			if (!stats.isFile()) return inline;
+			if (!stats.isFile()) return undefined;
 			// UTF-8 uses at most three bytes per JavaScript UTF-16 code unit.
 			// Keep a byte cap as well, including when the file grows after stat().
 			const maxBytes = 3 * maxChars + 1;
-			if (stats.size >= maxBytes) {
-				sourceOverLimit = true;
-				return undefined;
-			}
+			if (stats.size >= maxBytes) return undefined;
 			const buffer = Buffer.alloc(Math.min(64 * 1024, maxBytes));
 			const decoder = new StringDecoder("utf8");
 			let body = "";
@@ -73,23 +73,27 @@ async function exactBodyFromInline(inline: string, details: unknown, maxChars: n
 			while (totalBytes < maxBytes) {
 				const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, maxBytes - totalBytes), null);
 				if (bytesRead === 0) {
+					if (totalBytes !== stats.size) return undefined;
+					// Pi logs are expected to be finalized before tool_result. Detect
+					// observed changes; metadata checks cannot provide an atomic snapshot.
+					const finalStats = await handle.stat();
+					if (finalStats.size !== stats.size || finalStats.mtimeMs !== stats.mtimeMs || finalStats.ctimeMs !== stats.ctimeMs) {
+						return undefined;
+					}
 					body += decoder.end();
-					sourceOverLimit = body.length > maxChars;
-					return sourceOverLimit ? undefined : body;
+					return body.length > maxChars ? undefined : body;
 				}
 				totalBytes += bytesRead;
 				body += decoder.write(buffer.subarray(0, bytesRead));
-				sourceOverLimit = body.length > maxChars;
-				if (sourceOverLimit) return undefined;
+				if (body.length > maxChars) return undefined;
 			}
-			sourceOverLimit = true;
 			return undefined;
 		} finally {
 			await handle.close();
 		}
 	} catch {
-		// Cleanup errors must not turn a rejected full log into an eligible preview.
-		return sourceOverLimit ? undefined : inline;
+		// A trusted full-output indicator makes the preview ineligible on any I/O failure.
+		return undefined;
 	}
 }
 

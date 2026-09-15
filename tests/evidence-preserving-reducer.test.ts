@@ -537,7 +537,7 @@ describe("evidence-preserving reducer", () => {
 		}, context)).toBeUndefined();
 		expect(complete).not.toHaveBeenCalled();
 		expect(manager.customEntryData()).toContainEqual(
-			expect.objectContaining({ kind: "fallback", reason: "source-over-max-chars", maxChars: 600_000 }),
+			expect.objectContaining({ kind: "fallback", reason: "source-unavailable-or-over-max-chars", maxChars: 600_000 }),
 		);
 		expect(manager.customEntryData().some((entry) => entry.kind === "candidate")).toBe(false);
 	});

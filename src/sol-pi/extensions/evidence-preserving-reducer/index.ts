@@ -64,7 +64,7 @@ export async function reduceToolResult(
 	if (!reducible) return undefined;
 	const { body, command } = reducible;
 	if (body === undefined) {
-		journal("fallback", { reason: "source-over-max-chars", maxChars: config.maxChars });
+		journal("fallback", { reason: "source-unavailable-or-over-max-chars", maxChars: config.maxChars });
 		return undefined;
 	}
 	if (Buffer.byteLength(body, "utf8") < config.minBytes) return undefined;
