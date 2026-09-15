@@ -253,9 +253,18 @@ describe("observation pack", () => {
 		await rm(path);
 		await symlink(target, path);
 
-		await expect(
-			pi.tool("obs_recall").execute("recall-1", { id, offset: 0 }, undefined, undefined, fakeContext(sessionDir)),
-		).rejects.toMatchObject({ code: "ELOOP" });
+		const recall = pi.tool("obs_recall").execute(
+			"recall-1",
+			{ id, offset: 0 },
+			undefined,
+			undefined,
+			fakeContext(sessionDir),
+		);
+		if (process.platform === "win32") {
+			await expect(recall).rejects.toThrow(/not a regular file/u);
+		} else {
+			await expect(recall).rejects.toMatchObject({ code: "ELOOP" });
+		}
 	});
 
 	it("returns the exact original bytes across paged recall", async () => {
