@@ -85,4 +85,19 @@ describe("Online Context Compact economics", () => {
 		expect(result.reason).toBe("deferred_carried_debt");
 		expect(result.combinedBreakevenRequests).toBeGreaterThan(result.breakevenRequests ?? 0);
 	});
+
+	it("prices carried debt against savings from every active compaction", () => {
+		const result = decision({
+			writeTokens: 500,
+			archiveTokens: 200,
+			memoTokens: 100,
+			priorCompactionCount: 1,
+			cacheWriteReadRatio: 2,
+			carriedDebtTokens: 1_000,
+			cacheDebtRepaymentTokens: 200,
+		});
+
+		expect(result.breakevenRequests).toBe(5);
+		expect(result.combinedBreakevenRequests).toBe(5);
+	});
 });

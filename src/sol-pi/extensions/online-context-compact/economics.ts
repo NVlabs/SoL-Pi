@@ -153,9 +153,10 @@ export function decideCompaction(input: {
 		savingTokens > 0 && incrementalCacheCostRatio !== null
 			? (input.writeTokens * incrementalCacheCostRatio) / savingTokens
 			: null;
+	const combinedRepaymentTokens = input.cacheDebtRepaymentTokens + savingTokens;
 	const combinedBreakevenRequests =
-		savingTokens > 0 && incrementalCacheCostRatio !== null
-			? (input.carriedDebtTokens + input.writeTokens * incrementalCacheCostRatio) / savingTokens
+		savingTokens > 0 && incrementalCacheCostRatio !== null && combinedRepaymentTokens > 0
+			? (input.carriedDebtTokens + input.writeTokens * incrementalCacheCostRatio) / combinedRepaymentTokens
 			: null;
 	const firstCompaction = input.priorCompactionCount === 0;
 	const effectiveHorizonRequests =
