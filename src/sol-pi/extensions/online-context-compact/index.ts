@@ -16,10 +16,13 @@ export {
 } from "./economics.ts";
 export {
 	BOUNDARY_COMPACTION_INSTRUCTIONS,
+	boundaryCompactionInstructions,
 	createOnlineContextCompactExtension,
 	DEFAULT_KEEP_RECENT_TOKENS,
 	DEFAULT_NATIVE_SUMMARY_TOKEN_ESTIMATE,
+	MAX_PROGRESS_EVIDENCE_BYTES,
 	POST_COMPACTION_PLAN_REMINDER,
+	PROGRESS_EVIDENCE_HEADER,
 	type OnlineContextCompactOptions,
 	resolveKeepRecentTokens,
 } from "./extension.ts";
