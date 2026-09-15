@@ -15,6 +15,7 @@ import {
 	DIAGNOSTIC_COMMAND,
 	loadReducerConfig,
 	REDUCER_RECEIPT_SCHEMA,
+	validateReceipt,
 } from "../src/sol-pi/extensions/evidence-preserving-reducer/index.ts";
 import { archiveBody } from "../src/sol-pi/extensions/evidence-preserving-reducer/archive.ts";
 import {
@@ -198,7 +199,7 @@ describe("evidence-preserving reducer", () => {
 				source_sha256: sourceHash(input),
 				status: "failure",
 				uncertain: false,
-				evidence: [{ kind: "failure", quote: signal }],
+				evidence: [{ kind: "failure", quote: `${signal}\ndiagnostic output` }],
 			})),
 		);
 
@@ -240,7 +241,7 @@ describe("evidence-preserving reducer", () => {
 		vi.useFakeTimers();
 		const root = await storeRoot();
 		const fatal = "E   AssertionError: expected 4 but received 5";
-		const body = ["pytest session starts", fatal, "FAILED tests/test_math.py::test_addition", ".".repeat(6000)].join(
+		const body = ["pytest session starts", fatal, "FAILED tests/test_math.py::test_addition", "progress\n".repeat(750)].join(
 			"\n",
 		);
 		let call: CapturedCall | undefined;
@@ -258,6 +259,8 @@ describe("evidence-preserving reducer", () => {
 					evidence: [
 						{ kind: "failure", quote: fatal },
 						{ kind: "target", quote: "FAILED tests/test_math.py::test_addition" },
+						{ kind: "summary", quote: "pytest session starts" },
+						{ kind: "summary", quote: "progress" },
 					],
 				}),
 				"stop",
@@ -365,7 +368,7 @@ describe("evidence-preserving reducer", () => {
 					source_sha256: sourceHash(input),
 					status: failed ? "failure" : "success",
 					uncertain: false,
-					evidence: [{ kind: failed ? "failure" : "summary", quote: signal }],
+					evidence: [{ kind: failed ? "failure" : "summary", quote: failed ? `${signal}\ndiagnostic output` : signal }],
 				})),
 			);
 
@@ -379,7 +382,7 @@ describe("evidence-preserving reducer", () => {
 			expect(projected).toMatch(/Successfully wrote 12 bytes to target\.ts/u);
 			expect(projected).toMatch(failed ? /\[then_run:failed\]/u : /\[then_run:succeeded\]/u);
 			expect(projected).toMatch(/sol_pi_evidence_receipt_v1/u);
-			expect(projected).not.toContain("diagnostic output");
+			expect(Buffer.byteLength(projected)).toBeLessThan(Buffer.byteLength(body));
 			expect(result.isError).toBe(failed);
 			expect(result.details.patch).toBe("test patch");
 			const candidate = manager.customEntryData().find((entry) => entry.kind === "candidate");
@@ -416,6 +419,122 @@ describe("evidence-preserving reducer", () => {
 					: entry.reason === "unverifiable-quote",
 			),
 		).toBe(true);
+	});
+
+	it.each(["failure", "fatal"].flatMap((kind) =>
+		["build started", "0 errors reported", "no failures", "timeout disabled", "assertions passed"].map((quote) => ({ kind, quote })),
+	))("fails open when '$quote' is labeled $kind and omits the fatal error", async ({ kind, quote }) => {
+		const root = await storeRoot();
+		const body = `${quote}\nfatal: missing symbol x\n${"diagnostic output\n".repeat(400)}`;
+		const { context, manager, pi } = load(
+			root,
+			modelComplete(body, (input) => ({
+				schema: REDUCER_RECEIPT_SCHEMA,
+				source_sha256: sourceHash(input),
+				status: "failure",
+				uncertain: false,
+				evidence: [{ kind, quote }, { kind: "summary", quote: "diagnostic output" }],
+			})),
+		);
+
+		expect(await pi.emit("tool_result", bashEvent(body), context)).toBeUndefined();
+		expect(manager.customEntryData()).toContainEqual(
+			expect.objectContaining({ kind: "fallback", reason: "missing-failure-evidence" }),
+		);
+	});
+
+	it.each([
+		{ body: "fatal: missing symbol x", quotes: ["fatal"] },
+		{ body: "error: first\nfatal: second", quotes: ["error: first"] },
+		{ body: "no fatal errors were reported\nfatal: missing symbol x", quotes: ["fatal errors", "fatal: missing symbol x"] },
+		{ body: "fatal: first\nfatal: second", quotes: ["fatal: first\nfatal:", "second"] },
+		{ body: "ERROR:\n  missing symbol x", quotes: ["ERROR:", "missing symbol x"] },
+	])("rejects incomplete candidate failure lines (%#)", async ({ body, quotes }) => {
+		const archive = await archiveBody(await storeRoot(), body);
+		const raw = JSON.stringify({
+			schema: REDUCER_RECEIPT_SCHEMA, source_sha256: archive.hash, status: "failure", uncertain: false,
+			evidence: quotes.map((quote) => ({ kind: "failure", quote })),
+		});
+		expect(validateReceipt(raw, archive, body, true)).toEqual({ ok: false, reason: "missing-failure-evidence" });
+	});
+
+	it.each([
+		{ diagnostic: "FATAL errors were not reported\nSegmentation fault", quote: "FATAL errors were not reported", uncertain: false },
+		{ diagnostic: "0 errors reported\n/usr/bin/ld: undefined reference to symbol_x", quote: "0 errors reported", uncertain: false },
+		{ diagnostic: "构建开始\n链接失败：缺少符号 x", quote: "构建开始", uncertain: false },
+		{ diagnostic: "ERROR:\n  missing symbol x", quote: "ERROR:", uncertain: false },
+		{ diagnostic: "Process terminated with exit code 137", quote: "", uncertain: false },
+		{ diagnostic: "fatal: missing symbol x", quote: "fatal: missing symbol x", uncertain: true },
+		{ diagnostic: "fatal: missing symbol x\n" + "x".repeat(601), quote: "fatal: missing symbol x", uncertain: false },
+	])("preserves original output when a failed receipt omits content or is uncertain (%#)", async ({ diagnostic, quote, uncertain }) => {
+		const root = await storeRoot();
+		const body = `${diagnostic}\n${"progress\n".repeat(1000)}`;
+		const evidence = [{ kind: "summary", quote: "progress" }];
+		if (quote) evidence.push({ kind: "failure", quote });
+		const { context, manager, pi } = load(root, modelComplete(body, (input) => ({
+			schema: REDUCER_RECEIPT_SCHEMA,
+			source_sha256: sourceHash(input),
+			status: "failure",
+			uncertain,
+			evidence,
+		})));
+		expect(await pi.emit("tool_result", bashEvent(body), context)).toBeUndefined();
+		expect(manager.customEntryData()).toContainEqual(
+			expect.objectContaining({ kind: "fallback", reason: uncertain ? "uncertain-failure-evidence" : "missing-failure-evidence" }),
+		);
+		expect(manager.customEntryData().some((entry) => entry.kind === "applied")).toBe(false);
+	});
+
+	it.each(["构建失败：缺少文件", "Segmentation fault", "FATAL errors were not reported\nSegmentation fault", "ERROR:\n  missing symbol x"])(
+		"preserves all distinct lines without interpreting their meaning: %s", async (diagnostic) => {
+			const root = await storeRoot();
+			const body = `${diagnostic}\n${"progress\n".repeat(1000)}`;
+			const { context, manager, pi } = load(root, modelComplete(body, (input) => ({
+				schema: REDUCER_RECEIPT_SCHEMA,
+				source_sha256: sourceHash(input),
+				status: "failure",
+				uncertain: false,
+				evidence: [{ kind: "summary", quote: `${diagnostic}\nprogress` }],
+			})));
+			const result = await pi.emit("tool_result", bashEvent(body), context) as { isError: boolean };
+			expect(result.isError).toBe(true);
+			expect(manager.customEntryData().some((entry) => entry.kind === "applied")).toBe(true);
+		},
+	);
+
+	it.each(["", " \t\n\r\n"])("rejects a failed receipt with no nonblank source content (%#)", async (body) => {
+		const archive = await archiveBody(await storeRoot(), body);
+		const raw = JSON.stringify({
+			schema: REDUCER_RECEIPT_SCHEMA, source_sha256: archive.hash, status: "failure", uncertain: false, evidence: [],
+		});
+		expect(validateReceipt(raw, archive, body, true)).toEqual({ ok: false, reason: "missing-failure-evidence" });
+	});
+
+	it("keeps successful receipts independent of the failure-evidence policy", async () => {
+		const body = "0 errors reported";
+		const archive = await archiveBody(await storeRoot(), body);
+		const raw = JSON.stringify({
+			schema: REDUCER_RECEIPT_SCHEMA, source_sha256: archive.hash, status: "success", uncertain: true,
+			evidence: [{ kind: "summary", quote: body }],
+		});
+		expect(validateReceipt(raw, archive, body, false).ok).toBe(true);
+	});
+
+	it.each(["\n", "\r\n"])("accepts complete nonblank lines across evidence kinds (newline=%j)", async (newline) => {
+		const lines = ["0 errors reported", "fatal: missing symbol x", "FAILED test_link", "fatal: missing symbol x"];
+		const body = ["build started", ...lines, "build ended"].join(newline);
+		const archive = await archiveBody(await storeRoot(), body);
+		const raw = JSON.stringify({
+			schema: REDUCER_RECEIPT_SCHEMA, source_sha256: archive.hash, status: "failure", uncertain: false,
+			evidence: [
+				{ kind: "summary", quote: lines.slice(0, 2).join(newline) },
+				{ kind: "target", quote: lines[2] },
+				{ kind: "fatal", quote: lines[3] },
+				{ kind: "summary", quote: "build started" },
+				{ kind: "summary", quote: "build ended" },
+			],
+		});
+		expect(validateReceipt(raw, archive, body, true).ok).toBe(true);
 	});
 
 	it("fails open when Pi cannot complete the nested model call", async () => {
