@@ -42,6 +42,19 @@ const EDIT_THEN_RUN_DESCRIPTION =
 const WRITE_THEN_RUN_DESCRIPTION =
 	"Command to run next on this file after the write succeeds — e.g. run, build, start/restart, install, or check it; optional timeout in seconds. Skipped if the write fails; a non-zero exit is reported but keeps the write.";
 
+function hasSuccessfulThenRun(result: { content: readonly unknown[] }): boolean {
+	return result.content.some(
+		(block) =>
+			typeof block === "object" &&
+			block !== null &&
+			"type" in block &&
+			block.type === "text" &&
+			"text" in block &&
+			typeof block.text === "string" &&
+			(block.text === THEN_RUN_SUCCEEDED || block.text.startsWith(`${THEN_RUN_SUCCEEDED}\n`)),
+	);
+}
+
 export interface ActionFusionOptions {
 	/** Optional programmatic bash overrides, primarily for tests and embedded runtimes. */
 	readonly bashOptions?: BashToolOptions;
@@ -99,19 +112,16 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 				});
 				if (
 					then_run &&
-					result.content.some((block) => block.type === "text" && block.text.includes(THEN_RUN_SUCCEEDED))
+					hasSuccessfulThenRun(result)
 				) {
 					showSolPiSavings(ctx, "Action Fusion", "1 model round-trip avoided");
 				}
 				return result;
 			},
-			renderCall: (args, theme, context) => {
-				const base = baseEdit(context.cwd).renderCall!(args, theme, context);
-				return args.then_run ? renderSolPiTool(theme, "Action Fusion", "1 model round-trip avoided", base) : base;
-			},
+			renderCall: (args, theme, context) => baseEdit(context.cwd).renderCall!(args, theme, context),
 			renderResult: (result, resultOptions, theme, context) => {
 				const base = baseEdit(context.cwd).renderResult!(result, resultOptions, theme, context);
-				return context.args.then_run
+				return context.args.then_run && !context.isError && !resultOptions.isPartial && hasSuccessfulThenRun(result)
 					? renderSolPiTool(theme, "Action Fusion", "1 model round-trip avoided", base)
 					: base;
 			},
@@ -133,19 +143,16 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 				});
 				if (
 					then_run &&
-					result.content.some((block) => block.type === "text" && block.text.includes(THEN_RUN_SUCCEEDED))
+					hasSuccessfulThenRun(result)
 				) {
 					showSolPiSavings(ctx, "Action Fusion", "1 model round-trip avoided");
 				}
 				return result;
 			},
-			renderCall: (args, theme, context) => {
-				const base = baseWrite(context.cwd).renderCall!(args, theme, context);
-				return args.then_run ? renderSolPiTool(theme, "Action Fusion", "1 model round-trip avoided", base) : base;
-			},
+			renderCall: (args, theme, context) => baseWrite(context.cwd).renderCall!(args, theme, context),
 			renderResult: (result, resultOptions, theme, context) => {
 				const base = baseWrite(context.cwd).renderResult!(result, resultOptions, theme, context);
-				return context.args.then_run
+				return context.args.then_run && !context.isError && !resultOptions.isPartial && hasSuccessfulThenRun(result)
 					? renderSolPiTool(theme, "Action Fusion", "1 model round-trip avoided", base)
 					: base;
 			},
