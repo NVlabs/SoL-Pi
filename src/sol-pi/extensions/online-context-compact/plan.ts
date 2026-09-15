@@ -2,7 +2,8 @@
  * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  */
-import { Guard } from "typebox/guard";
+import { Type } from "typebox";
+import { Check } from "typebox/value";
 
 export const PLAN_STATUSES = ["pending", "in_progress", "completed"] as const;
 
@@ -21,17 +22,14 @@ export type PlanTransition = {
 
 const MAX_PLAN_STEPS = 128;
 export const MAX_PLAN_STRING_LENGTH = 16_384;
+const PLAN_STRING_SCHEMA = Type.String({ minLength: 1, maxLength: MAX_PLAN_STRING_LENGTH });
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isBoundedString(value: unknown): value is string {
-	return (
-		typeof value === "string" &&
-		Guard.IsMinLength(value, 1) &&
-		Guard.IsMaxLength(value, MAX_PLAN_STRING_LENGTH)
-	);
+	return Check(PLAN_STRING_SCHEMA, value);
 }
 
 function isPlanStatus(value: unknown): value is PlanStatus {
