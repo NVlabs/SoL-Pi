@@ -52,6 +52,12 @@ describe("SoL-Pi config", () => {
 		});
 	});
 
+	it("loads the optional trajectory inspector flag", () => {
+		const { agentDir, cwd } = fixture();
+		writeFileSync(join(agentDir, "sol-pi.json"), JSON.stringify({ version: 1, trajectoryInspector: true }));
+		expect(loadSolPiConfig(cwd, agentDir, true)).toEqual({ ...DEFAULT_CONFIG, trajectoryInspector: true });
+	});
+
 	it("uses the project config instead of merging the global config", () => {
 		const { agentDir, cwd } = fixture();
 		writeFileSync(
