@@ -20,6 +20,9 @@ const CHARS_PER_TOKEN = 4;
 const OBSERVATION_ID_PATTERN = /^obs_[a-f0-9]{24}$/u;
 const READ_OBJECT_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW;
 const CREATE_OBJECT_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
+export const SEARCH_MAX_MATCHES = 20;
+const SEARCH_READ_BYTES = 4096;
+const SEARCH_CONTEXT_BYTES = 256;
 
 /**
  * Receipts from the evidence-preserving reducer are already a reduction of a
@@ -187,7 +190,7 @@ export function placeholderFor(observation: Observation): string {
 		`original_bytes: ${observation.bytes}`,
 		`original_lines: ${observation.lines}`,
 		`estimated_tokens: ${observation.tokens}`,
-		`retrieve: call obs_recall with {"id":"${observation.id}","offset":0}; continue with returned next_offset`,
+		`retrieve: call obs_recall with {"id":"${observation.id}","offset":0}; add query for literal search; continue with next_offset`,
 		`[first complete lines, up to ${headBudget} bytes]`,
 		head,
 		`[middle omitted; last complete lines, up to ${tailBudget} bytes]`,
@@ -204,10 +207,158 @@ export interface RecallChunk {
 	readonly eof: boolean;
 }
 
+export interface SearchMatch {
+	readonly byteOffset: number;
+	readonly byteEnd: number;
+	readonly line: number;
+	readonly contextStart: number;
+	readonly contextEnd: number;
+	readonly context: string;
+}
+
+export interface SearchResult {
+	readonly matches: readonly SearchMatch[];
+	readonly nextOffset: number;
+	readonly eof: boolean;
+	readonly scannedBytes: number;
+}
+
 function trimUtf8End(buffer: Buffer, limit: number): number {
 	let end = limit;
 	while (end > 0 && end < buffer.length && ((buffer[end] ?? 0) & 0xc0) === 0x80) end -= 1;
 	return end;
+}
+
+function trimUtf8Start(buffer: Buffer, start: number): number {
+	let result = start;
+	while (result < buffer.length && ((buffer[result] ?? 0) & 0xc0) === 0x80) result += 1;
+	return result;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+	if (signal?.aborted) throw new Error("Observation search aborted");
+}
+
+async function readSnapshot(
+	handle: FileHandle,
+	buffer: Buffer,
+	position: number,
+	signal: AbortSignal | undefined,
+): Promise<void> {
+	let total = 0;
+	while (total < buffer.length) {
+		throwIfAborted(signal);
+		const { bytesRead } = await handle.read(buffer, total, buffer.length - total, position + total);
+		if (bytesRead === 0) throw new Error("Stored observation shrank during search");
+		total += bytesRead;
+	}
+}
+
+async function countPrefixLines(
+	handle: FileHandle,
+	offset: number,
+	signal: AbortSignal | undefined,
+): Promise<{ lines: number; bytes: number }> {
+	let position = 0;
+	let lines = 1;
+	while (position < offset) {
+		const length = Math.min(SEARCH_READ_BYTES, offset - position);
+		const buffer = Buffer.alloc(length);
+		await readSnapshot(handle, buffer, position, signal);
+		for (const byte of buffer) if (byte === 0x0a) lines += 1;
+		position += length;
+	}
+	return { lines, bytes: position };
+}
+
+async function contextFor(
+	handle: FileHandle,
+	size: number,
+	byteOffset: number,
+	byteEnd: number,
+	signal: AbortSignal | undefined,
+): Promise<Omit<SearchMatch, "byteOffset" | "byteEnd" | "line">> {
+	const windowStart = Math.max(0, byteOffset - SEARCH_CONTEXT_BYTES);
+	const windowEnd = Math.min(size, byteEnd + SEARCH_CONTEXT_BYTES);
+	// Read enough lookahead to tell whether the fixed window ends in a UTF-8
+	// continuation byte. The returned range remains bounded by windowEnd.
+	const buffer = Buffer.alloc(Math.min(size, windowEnd + 3) - windowStart);
+	await readSnapshot(handle, buffer, windowStart, signal);
+	const start = trimUtf8Start(buffer, 0);
+	const end = trimUtf8End(buffer, windowEnd - windowStart);
+	return {
+		contextStart: windowStart + start,
+		contextEnd: windowStart + end,
+		context: buffer.subarray(start, end).toString("utf8"),
+	};
+}
+
+/**
+ * Search an archived observation as literal UTF-8 bytes. Search offsets are
+ * inclusive match starts. Line numbers require a bounded prefix rescan because
+ * archives intentionally carry no line index.
+ */
+export async function searchObservation(
+	path: string,
+	query: Buffer,
+	offset: number,
+	maxResultBytes: number,
+	signal: AbortSignal | undefined,
+): Promise<SearchResult> {
+	const handle = await open(path, READ_OBJECT_FLAGS);
+	try {
+		const fileStats = await handle.stat();
+		if (!fileStats.isFile()) throw new Error("Stored observation is not a regular file");
+		if (offset > fileStats.size) throw new Error(`Offset ${offset} exceeds observation size ${fileStats.size}`);
+		const prefix = await countPrefixLines(handle, offset, signal);
+		let position = offset;
+		let line = prefix.lines;
+		let carry = Buffer.alloc(0);
+		let scannedBytes = prefix.bytes;
+		const matches: SearchMatch[] = [];
+		while (position < fileStats.size) {
+			throwIfAborted(signal);
+			const length = Math.min(SEARCH_READ_BYTES, fileStats.size - position);
+			const chunk = Buffer.alloc(length);
+			await readSnapshot(handle, chunk, position, signal);
+			scannedBytes += length;
+			const combined = carry.length === 0 ? chunk : Buffer.concat([carry, chunk]);
+			const base = position - carry.length;
+			let combinedBaseLine = line;
+			for (const byte of carry) if (byte === 0x0a) combinedBaseLine -= 1;
+			let index = 0;
+			for (;;) {
+				throwIfAborted(signal);
+				const found = combined.indexOf(query, index);
+				if (found < 0) break;
+				const byteOffset = base + found;
+				if (byteOffset >= offset && byteOffset + query.length <= position + length) {
+					const beforeMatch = combined.subarray(0, found);
+					let matchLine = combinedBaseLine;
+					for (const byte of beforeMatch) if (byte === 0x0a) matchLine += 1;
+					const byteEnd = byteOffset + query.length;
+					const context = await contextFor(handle, fileStats.size, byteOffset, byteEnd, signal);
+					const match = { byteOffset, byteEnd, line: matchLine, ...context };
+					const serialized = Buffer.byteLength(JSON.stringify(match), "utf8") + 1;
+					const used = matches.reduce((total, entry) => total + Buffer.byteLength(JSON.stringify(entry), "utf8") + 1, 0);
+					if (matches.length >= SEARCH_MAX_MATCHES || used + serialized > maxResultBytes) {
+						return { matches, nextOffset: byteOffset, eof: false, scannedBytes };
+					}
+					matches.push(match);
+					if (matches.length >= SEARCH_MAX_MATCHES) {
+						return { matches, nextOffset: byteOffset + 1, eof: false, scannedBytes };
+					}
+				}
+				index = found + 1;
+			}
+			for (const byte of chunk) if (byte === 0x0a) line += 1;
+			carry = combined.subarray(Math.max(0, combined.length - (query.length - 1)));
+			position += length;
+		}
+		return { matches, nextOffset: fileStats.size, eof: true, scannedBytes };
+	} finally {
+		await handle.close();
+	}
 }
 
 export async function readRecallChunk(
