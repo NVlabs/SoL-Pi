@@ -23,6 +23,20 @@ describe("Online Context Compact plans", () => {
 		expect(parsePlanSteps(OPEN)).toEqual(OPEN);
 	});
 
+	it.each([
+		{ name: "astral code points", unit: "😀" },
+		{ name: "combining sequences", unit: "a\u0301" },
+	])("matches TypeBox string-length semantics for $name", ({ unit }) => {
+		const maxLength = 16_384;
+		const goal = unit.repeat(maxLength);
+		expect(Buffer.byteLength(goal)).toBeGreaterThan(maxLength);
+
+		expect(parsePlanSteps([{ id: "unicode", goal, status: "pending" }])).toEqual([
+			{ id: "unicode", goal, status: "pending" },
+		]);
+		expect(parsePlanSteps([{ id: "unicode", goal: `${goal}a`, status: "pending" }])).toBeUndefined();
+	});
+
 	it("detects only new transitions into completed", () => {
 		expect(analyzePlanTransition(OPEN, DONE).completedSteps).toEqual(DONE);
 		expect(analyzePlanTransition(DONE, DONE).completedSteps).toEqual([]);
