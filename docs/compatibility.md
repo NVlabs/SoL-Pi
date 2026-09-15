@@ -33,6 +33,18 @@ All persistent paths use `SessionManager.getSessionDir()` and `getSessionId()`, 
 
 The unpublished shared artifact layout is not read or migrated. Each session starts from its own `<sessionDir>/sol-pi/<sessionId>/` directory.
 
+Accepted reducer receipts are reused from a session-local, in-memory LRU cache
+of at most 64 entries. Reuse requires identical source bytes, command, error
+status, configured reducer provider/model, output limit, receipt schema, and
+reducer instructions. Every hit still verifies the source archive and validates
+the quoted evidence, then rebuilds the receipt for the current tool result.
+Hits record a `cache_hit` journal event and zero new reducer token usage; they do
+not record another provider response. Failed or rejected reductions are never
+cached. The cache adds no files and is empty after a process restart. Concurrent
+first occurrences may still make separate model calls; this cache reuses only
+completed, accepted results. Actual cost savings depend on repeated identical
+logs and the configured model's billing.
+
 ## Online Context Compact
 
 Online Context Compact uses ordinary public `context` and `before_provider_request` handlers instead of fork-only post-transform observer methods. Public handlers run in extension load order, so the SoL-Pi entrypoint registers Online Context Compact after its other context transformers. A third-party transformer loaded later is outside the context-growth observation used by its estimate.
