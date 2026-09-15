@@ -18,8 +18,16 @@ export const PLACEHOLDER_EXCERPT_BYTES = 1024;
 
 const CHARS_PER_TOKEN = 4;
 const OBSERVATION_ID_PATTERN = /^obs_[a-f0-9]{24}$/u;
-const READ_OBJECT_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW;
-const CREATE_OBJECT_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
+const NO_FOLLOW_FLAG = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
+const READ_OBJECT_FLAGS = constants.O_RDONLY | NO_FOLLOW_FLAG;
+const CREATE_OBJECT_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NO_FOLLOW_FLAG;
+
+async function assertRegularObjectPath(path: string, id: string): Promise<void> {
+	const pathStats = await lstat(path);
+	if (!pathStats.isFile() || pathStats.isSymbolicLink()) {
+		throw new Error(`Content-addressed observation is not a regular file for ${id}`);
+	}
+}
 
 /**
  * Receipts from the evidence-preserving reducer are already a reduction of a
@@ -134,12 +142,11 @@ export async function ensureStored(observation: Observation): Promise<void> {
 		await handle.writeFile(observation.text, { encoding: "utf8" });
 	} catch (error) {
 		if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
+		await assertRegularObjectPath(observation.filePath, observation.id);
 		const existingHandle = await open(observation.filePath, READ_OBJECT_FLAGS);
 		try {
 			const existing = await existingHandle.stat();
-			if (!existing.isFile()) {
-				throw new Error(`Content-addressed observation is not a regular file for ${observation.id}`);
-			}
+			if (!existing.isFile()) throw new Error(`Content-addressed observation is not a regular file for ${observation.id}`);
 			if (existing.size !== observation.bytes) {
 				throw new Error(`Content-addressed observation size mismatch for ${observation.id}`);
 			}
@@ -219,6 +226,7 @@ export async function readRecallChunk(
 	try {
 		const fileStats = await handle.stat();
 		if (!fileStats.isFile()) throw new Error("Stored observation is not a regular file");
+		await assertRegularObjectPath(path, "recall");
 		if (offset > fileStats.size) throw new Error(`Offset ${offset} exceeds observation size ${fileStats.size}`);
 
 		const available = Math.max(0, fileStats.size - offset);
