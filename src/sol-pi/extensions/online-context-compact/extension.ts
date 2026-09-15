@@ -3,11 +3,10 @@
  * SPDX-License-Identifier: MIT
  */
 import type { AgentMessage, AgentToolResult } from "@earendil-works/pi-agent-core";
+import * as piCodingAgent from "@earendil-works/pi-coding-agent";
 import {
 	buildSessionContext,
 	estimateTokens,
-	findCutPoint,
-	sessionEntryToContextMessages,
 	type ExtensionContext,
 	type ExtensionFactory,
 	type SessionEntry,
@@ -31,6 +30,71 @@ import {
 	type ProgressSummary,
 } from "./state.ts";
 import { registerOnlineTools, type PlanUpdateInput } from "./tools.ts";
+
+/*
+ * omp compat: the oh-my-pi (omp) harness re-exports a reduced
+ * `@earendil-works/pi-coding-agent` surface that omits `findCutPoint` and
+ * `sessionEntryToContextMessages`. Both are used only by the feasibility
+ * pre-check below, so resolve them at runtime and fall back to local
+ * equivalents when the host does not export them.
+ */
+type CutPointResult = {
+	readonly firstKeptEntryIndex: number;
+	readonly turnStartIndex: number;
+	readonly isSplitTurn: boolean;
+};
+
+// Unchecked casts: the host module namespace is structurally opaque here, and
+// the two optional members are exactly what this shim probes for.
+const hostModule = piCodingAgent as unknown as {
+	findCutPoint?: (
+		entries: readonly SessionEntry[],
+		startIndex: number,
+		endIndex: number,
+		keepRecentTokens: number,
+	) => CutPointResult;
+	sessionEntryToContextMessages?: (entry: SessionEntry) => readonly unknown[];
+};
+
+function entryMessage(entry: SessionEntry): AgentMessage | undefined {
+	if (!entry || typeof entry !== "object" || !("message" in entry)) return undefined;
+	// Unchecked cast: session entries that carry a message carry an agent message.
+	return entry.message as AgentMessage;
+}
+
+function entryContextMessageCount(entry: SessionEntry): number {
+	const hostFn = hostModule.sessionEntryToContextMessages;
+	if (hostFn) return hostFn(entry).length;
+	return entryMessage(entry) ? 1 : 0;
+}
+
+function findCutPoint(
+	entries: readonly SessionEntry[],
+	startIndex: number,
+	endIndex: number,
+	keepRecentTokens: number,
+): CutPointResult {
+	const hostFn = hostModule.findCutPoint;
+	if (hostFn) return hostFn(entries, startIndex, endIndex, keepRecentTokens);
+	// Token-walk the tail backwards; the first entry that no longer fits in the
+	// retained budget ends the compactable history. Turn splitting is a host-only
+	// refinement, so report a whole-entry cut.
+	let kept = 0;
+	let firstKeptEntryIndex = endIndex;
+	for (let index = endIndex - 1; index >= startIndex; index--) {
+		const entry = entries[index];
+		if (!entry) continue;
+		if (entryContextMessageCount(entry) === 0) {
+			firstKeptEntryIndex = index;
+			continue;
+		}
+		const message = entryMessage(entry);
+		if (message) kept += estimateTokens(message);
+		if (kept > keepRecentTokens) break;
+		firstKeptEntryIndex = index;
+	}
+	return { firstKeptEntryIndex, turnStartIndex: -1, isSplitTurn: false };
+}
 
 export const DEFAULT_KEEP_RECENT_TOKENS = 20_000;
 export const DEFAULT_NATIVE_SUMMARY_TOKEN_ESTIMATE = 1_000;
@@ -91,7 +155,7 @@ function compactionMessageCount(entries: readonly SessionEntry[], startIndex: nu
 	let count = 0;
 	for (let index = startIndex; index < endIndex; index++) {
 		const entry = entries[index];
-		if (entry && entry.type !== "compaction" && sessionEntryToContextMessages(entry).length > 0) count++;
+		if (entry && entry.type !== "compaction" && entryContextMessageCount(entry) > 0) count++;
 	}
 	return count;
 }
