@@ -8,7 +8,8 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveToolPath } from "../src/sol-pi/extensions/action-fusion/file-queue.ts";
+import { homedir } from "node:os";
+import { normalizeWindowsShellPath, resolveToolPath } from "../src/sol-pi/extensions/action-fusion/file-queue.ts";
 import { createActionFusionExtension, type ActionFusionOptions } from "../src/sol-pi/extensions/action-fusion/index.ts";
 
 const tempDirs: string[] = [];
@@ -29,6 +30,18 @@ function loadTools(options: ActionFusionOptions = {}): Map<string, ToolDefinitio
 	return tools;
 }
 
+/** Exercise the platform-dependent branches without a Windows runner. */
+function withPlatform(platform: NodeJS.Platform, run: () => void): void {
+	const original = Object.getOwnPropertyDescriptor(process, "platform");
+	if (!original) throw new Error("process.platform is not configurable");
+	Object.defineProperty(process, "platform", { ...original, value: platform });
+	try {
+		run();
+	} finally {
+		Object.defineProperty(process, "platform", original);
+	}
+}
+
 function context(cwd: string): ExtensionContext {
 	return {
 		cwd,
@@ -47,6 +60,36 @@ describe("Action Fusion file URL paths", () => {
 		const url = pathToFileURL(target).href;
 		expect(resolveToolPath(cwd, url)).toBe(target);
 		expect(resolveToolPath(cwd, `@${url}`)).toBe(target);
+	});
+
+	it("converts Git Bash, MSYS, Cygwin, and WSL drive paths on Windows", () => {
+		withPlatform("win32", () => {
+			expect(normalizeWindowsShellPath("/c/src/app.ts")).toBe("C:\\src\\app.ts");
+			expect(normalizeWindowsShellPath("/mnt/d/work/notes.md")).toBe("D:\\work\\notes.md");
+			expect(normalizeWindowsShellPath("/cygdrive/e/x/y")).toBe("E:\\x\\y");
+			expect(normalizeWindowsShellPath("/c")).toBe("C:\\");
+			// Not a drive path: leave it alone.
+			expect(normalizeWindowsShellPath("/usr/local/bin/pi")).toBe("/usr/local/bin/pi");
+			expect(normalizeWindowsShellPath("//server/share/file.txt")).toBe("//server/share/file.txt");
+			expect(normalizeWindowsShellPath("C:\\already\\native.ts")).toBe("C:\\already\\native.ts");
+		});
+	});
+
+	it("leaves a POSIX path alone off Windows", () => {
+		withPlatform("linux", () => {
+			expect(normalizeWindowsShellPath("/c/src/app.ts")).toBe("/c/src/app.ts");
+			expect(resolveToolPath("/work", "/c/src/app.ts")).toBe("/c/src/app.ts");
+		});
+	});
+
+	it("expands a Windows home-relative path", () => {
+		withPlatform("win32", () => {
+			expect(resolveToolPath("/work", "~\\notes.txt")).toBe(resolve(homedir(), "notes.txt"));
+		});
+		withPlatform("linux", () => {
+			// A backslash is an ordinary filename character here.
+			expect(resolveToolPath("/work", "~\\notes.txt")).toBe(resolve("/work", "~\\notes.txt"));
+		});
 	});
 
 	it("preserves ordinary relative and absolute path semantics", () => {
