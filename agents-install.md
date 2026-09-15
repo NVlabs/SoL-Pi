@@ -7,7 +7,7 @@ Installation and configuration are complete only when Pi remains unmodified, the
 ## Rules
 
 - Do not modify, patch, fork, or vendor upstream Pi. SoL-Pi must load as a standalone extension through Pi's public package interface.
-- Use Node.js 22.19 or newer and the tested Pi release `@earendil-works/pi-coding-agent@0.84.2`. Treat a different Pi version as a compatibility change and rerun the full suite before using it.
+- Use Node.js 22.19 or newer and the tested Pi release `@earendil-works/pi-coding-agent@0.85.1`. Treat a different Pi version as a compatibility change and rerun the full suite before using it.
 - Do not clean, reset, switch, or overwrite unrelated repository changes.
 - Do not print, log, commit, upload, or include any secret in a command line. Check only whether a credential is present.
 - Keep SoL-Pi settings in `sol-pi.json`. The Evidence-Preserving Reducer provider/model route is a SoL-Pi setting; provider URLs, credentials, the main agent model, and shell behavior remain Pi settings.
@@ -54,11 +54,11 @@ Stop if any command fails. Do not hide a failure with `|| true` or replace `npm 
 Install the tested Pi release without changing its source:
 
 ```bash
-npm install --global --ignore-scripts @earendil-works/pi-coding-agent@0.84.2
+npm install --global --ignore-scripts @earendil-works/pi-coding-agent@0.85.1
 pi --version
 ```
 
-Require `pi --version` to report `0.84.2`.
+Require `pi --version` to report `0.85.1`.
 
 For a project-local registration, run this from `target_project` and substitute the resolved absolute `sol_pi_root`:
 

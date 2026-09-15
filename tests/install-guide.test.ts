@@ -34,7 +34,7 @@ describe("agent installation instructions", () => {
 		const guide = rootFile("agents-install.md");
 		const requiredText = [
 			"Node.js 22.19",
-			"@earendil-works/pi-coding-agent@0.84.2",
+			`@earendil-works/pi-coding-agent@${JSON.parse(rootFile("package.json")).devDependencies["@earendil-works/pi-coding-agent"]}`,
 			"npm ci --ignore-scripts",
 			"npm run check",
 			"npm audit",
