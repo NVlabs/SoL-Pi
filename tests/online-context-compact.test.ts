@@ -13,7 +13,11 @@ import {
 	registerOnlineContextCompact,
 	resolveKeepRecentTokens,
 } from "../src/sol-pi/extensions/online-context-compact/index.ts";
-import { restoreOnlineState } from "../src/sol-pi/extensions/online-context-compact/state.ts";
+import {
+	appendOnlineState,
+	initialOnlineState,
+	restoreOnlineState,
+} from "../src/sol-pi/extensions/online-context-compact/state.ts";
 import { FakePi, FakeSessionManager, fakeContext } from "./helpers.ts";
 
 const OPEN = [{ id: "build", goal: "build it", status: "in_progress" }] as const;
@@ -87,6 +91,37 @@ describe("Online Context Compact extension", () => {
 		await pi.emit("session_start", { type: "session_start" }, context);
 		const messages = [assistant("unchanged")];
 		expect(await pi.emitContext(messages, context)).toEqual(messages);
+	});
+
+	it.each([false, true])("preserves existing debt during unrelated native compaction (fromExtension=%s)", async (fromExtension) => {
+		const manager = new FakeSessionManager();
+		const pi = new FakePi(manager);
+		appendOnlineState(pi.asExtensionApi(), {
+			...initialOnlineState(),
+			cacheDebtTokens: 900,
+			cacheDebtRepaymentTokens: 300,
+		});
+		registerOnlineContextCompact(pi.asExtensionApi());
+		const context = fakeContext(manager);
+
+		await pi.emit("session_start", { type: "session_start" }, context);
+		await pi.emit(
+			"session_compact",
+			{
+				type: "session_compact",
+				fromExtension,
+				reason: "manual",
+				willRetry: false,
+				compactionEntry: {},
+			},
+			context,
+		);
+
+		expect(restoreOnlineState(manager.entries)).toMatchObject({
+			nativeCompactionCount: 1,
+			cacheDebtTokens: 900,
+			cacheDebtRepaymentTokens: 300,
+		});
 	});
 
 	it("stops at an eligible completed-step boundary, then compacts after settlement", async () => {
@@ -207,7 +242,12 @@ describe("Online Context Compact extension", () => {
 		await firstSettlement;
 		expect(firstSettlementFinished).toBe(true);
 		expect(await pi.emit("session_before_tree", { type: "session_before_tree" }, context)).toBeUndefined();
-		expect(restoreOnlineState(manager.entries)).toMatchObject({ nativeCompactionCount: 1, pendingProgress: [] });
+		expect(restoreOnlineState(manager.entries)).toMatchObject({
+			nativeCompactionCount: 1,
+			pendingProgress: [],
+			cacheDebtTokens: 2_242_500,
+			cacheDebtRepaymentTokens: 193_996,
+		});
 	});
 });
 
