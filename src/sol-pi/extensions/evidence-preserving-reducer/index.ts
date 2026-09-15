@@ -30,7 +30,6 @@ import { formatSavingsBytes, showSolPiSavings } from "../../tui.ts";
 import { archiveBody, archiveRoot } from "./archive.ts";
 import { reducibleToolResult } from "./candidate.ts";
 import {
-	DIAGNOSTIC_COMMAND,
 	isRecord,
 	LIKELY_SECRET,
 	loadReducerConfig,
@@ -61,9 +60,13 @@ export async function reduceToolResult(
 	event: ToolResultEvent,
 	context: ExtensionContext,
 ): Promise<ReducedToolResult | undefined> {
-	const reducible = await reducibleToolResult(event);
-	if (!reducible || !DIAGNOSTIC_COMMAND.test(reducible.command)) return undefined;
+	const reducible = await reducibleToolResult(event, config.maxChars);
+	if (!reducible) return undefined;
 	const { body, command } = reducible;
+	if (body === undefined) {
+		journal("fallback", { reason: "source-over-max-chars", maxChars: config.maxChars });
+		return undefined;
+	}
 	if (Buffer.byteLength(body, "utf8") < config.minBytes) return undefined;
 	if (body.length > config.maxChars) {
 		journal("fallback", { reason: "source-over-max-chars", sourceChars: body.length, maxChars: config.maxChars });

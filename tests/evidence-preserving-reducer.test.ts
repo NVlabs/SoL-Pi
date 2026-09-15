@@ -523,6 +523,25 @@ describe("evidence-preserving reducer", () => {
 		expect(input).not.toContain("ERROR outside file");
 	});
 
+	it.each(["bash", "write", "edit"])("keeps oversized %s logs out of the reducer", async (toolName) => {
+		const root = await storeRoot();
+		const outputPath = join(tmpdir(), `pi-bash-${randomUUID()}.log`);
+		cleanupPaths.push(outputPath);
+		await writeFile(outputPath, "x".repeat(2_000_000));
+		const complete = vi.fn(async () => { throw new Error("unexpected model call"); });
+		const { context, manager, pi } = load(root, complete);
+		const preview = `ERROR truncated\n${"x".repeat(5000)}\n[Full output: ${outputPath}]`;
+		const event = toolName === "bash" ? bashEvent(preview) : { ...fusedEvent(preview, true), toolName };
+		expect(await pi.emit("tool_result", {
+			...event, details: toolName === "bash" ? { fullOutputPath: outputPath } : {},
+		}, context)).toBeUndefined();
+		expect(complete).not.toHaveBeenCalled();
+		expect(manager.customEntryData()).toContainEqual(
+			expect.objectContaining({ kind: "fallback", reason: "source-over-max-chars", maxChars: 600_000 }),
+		);
+		expect(manager.customEntryData().some((entry) => entry.kind === "candidate")).toBe(false);
+	});
+
 	it("does not delegate small or non-diagnostic output", async () => {
 		const root = await storeRoot();
 		let calls = 0;
