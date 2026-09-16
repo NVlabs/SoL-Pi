@@ -92,7 +92,9 @@ it("rejects a symlink in place of an existing content-addressed archive object",
 	await rm(first.path);
 	await symlink(target, first.path);
 
-	await expect(archiveBody(root, body)).rejects.toThrow(/not a regular file/u);
+	await expect(archiveBody(root, body)).rejects.toThrow(
+		process.platform === "win32" ? /atomic no-follow archive access is unavailable/u : /not a regular file/u,
+	);
 });
 
 function bashEvent(body: string, overrides: Partial<ToolResultEvent> = {}): ToolResultEvent {
