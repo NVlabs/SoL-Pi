@@ -97,7 +97,17 @@ describe("Online Context Compact economics", () => {
 			cacheDebtRepaymentTokens: 200,
 		});
 
-		expect(result.breakevenRequests).toBe(5);
-		expect(result.combinedBreakevenRequests).toBe(5);
+		expect(result.postCompactionTokens).toBe(400);
+		expect(result.breakevenRequests).toBe(4);
+		expect(result.combinedBreakevenRequests).toBeCloseTo(14 / 3);
+	});
+
+	it("charges cache-write debt only for the post-compaction context", () => {
+		const result = decision({
+			cacheWriteReadRatio: 2,
+		});
+
+		expect(result.postCompactionTokens).toBe(21_000);
+		expect(result.breakevenRequests).toBeCloseTo(21_000 / 59_000);
 	});
 });

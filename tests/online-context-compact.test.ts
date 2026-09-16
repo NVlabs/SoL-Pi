@@ -245,7 +245,7 @@ describe("Online Context Compact extension", () => {
 		expect(restoreOnlineState(manager.entries)).toMatchObject({
 			nativeCompactionCount: 1,
 			pendingProgress: [],
-			cacheDebtTokens: 2_242_500,
+			cacheDebtTokens: 11_546,
 			cacheDebtRepaymentTokens: 193_996,
 		});
 	});
