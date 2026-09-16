@@ -57,6 +57,14 @@ describe("Action Fusion file URL paths", () => {
 		expect(resolveToolPath(cwd, target)).toBe(target);
 	});
 
+	it.each(["\u00A0", "\u2000", "\u200A", "\u202F", "\u205F", "\u3000"])(
+		"normalizes Unicode space %s like Pi's built-in file tools",
+		(space) => {
+			const cwd = join(tmpdir(), "action-fusion-cwd");
+			expect(resolveToolPath(cwd, `target${space}file.txt`)).toBe(join(cwd, "target file.txt"));
+		},
+	);
+
 	it.each([
 		{ name: "write", prefix: "" }, { name: "edit", prefix: "" },
 		{ name: "write", prefix: "@" }, { name: "edit", prefix: "@" },
@@ -79,6 +87,33 @@ describe("Action Fusion file URL paths", () => {
 			then_run: { command: "check target" },
 		};
 		const result = await tools.get(name)!.execute("file-url", input, undefined, undefined, context(cwd));
+		expect(commands).toEqual(["check target"]);
+		expect(result.content).toContainEqual({
+			type: "text",
+			text: expect.stringMatching(/^\[then_run:succeeded\](?:\n|$)/),
+		});
+		expect(await readFile(target, "utf8")).toBe("after\n");
+	});
+
+	it.each(["write", "edit"])("runs then_run after a real %s through a Unicode-space path", async (name) => {
+		const cwd = await createTempDir();
+		const target = join(cwd, `${name} space.txt`);
+		if (name === "edit") await writeFile(target, "before\n");
+		const commands: string[] = [];
+		const tools = loadTools({
+			bashOptions: { operations: { exec: async (command, commandCwd) => {
+				commands.push(command);
+				expect(commandCwd).toBe(cwd);
+				expect(await readFile(target, "utf8")).toBe("after\n");
+				return { exitCode: 0 };
+			} } },
+		});
+		const input = {
+			path: `${name}\u00A0space.txt`,
+			...(name === "write" ? { content: "after\n" } : { edits: [{ oldText: "before", newText: "after" }] }),
+			then_run: { command: "check target" },
+		};
+		const result = await tools.get(name)!.execute("unicode-space", input, undefined, undefined, context(cwd));
 		expect(commands).toEqual(["check target"]);
 		expect(result.content).toContainEqual({
 			type: "text",
