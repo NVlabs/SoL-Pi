@@ -233,17 +233,11 @@ describe("observation pack", () => {
 		await mkdir(observationObjectsDirectory(sessionDir), { recursive: true });
 		await writeFile(observationPath(sessionDir, id), body);
 
-		const errors = captureConsoleErrors();
 		const projected = await project(observationPackPi(), message, sessionDir, 3);
 
 		expect(projected[0]).toBe(body);
 		expect(projected[1]).toBe(body);
-		if (process.platform === "win32") {
-			expect(projected[2]).toBe(body);
-			expect(errors.some((error) => error.includes("atomic no-follow object access is unavailable"))).toBe(true);
-		} else {
-			expect(projected[2]).toMatch(new RegExp(`id: ${id}`, "u"));
-		}
+		expect(projected[2]).toMatch(new RegExp(`id: ${id}`, "u"));
 	});
 
 	it("fails recall closed when an object path is replaced by a symlink", async () => {
@@ -267,7 +261,7 @@ describe("observation pack", () => {
 			fakeContext(sessionDir),
 		);
 		if (process.platform === "win32") {
-			await expect(recall).rejects.toThrow(/atomic no-follow object access is unavailable/u);
+			await expect(recall).rejects.toThrow(/not a regular file/u);
 		} else {
 			await expect(recall).rejects.toMatchObject({ code: "ELOOP" });
 		}

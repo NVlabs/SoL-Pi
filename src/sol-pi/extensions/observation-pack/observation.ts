@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
+import { constants, type Stats } from "node:fs";
 import { type FileHandle, lstat, mkdir, open } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -23,10 +23,28 @@ const NO_FOLLOW_FLAG = HAS_ATOMIC_NO_FOLLOW ? constants.O_NOFOLLOW : 0;
 const READ_OBJECT_FLAGS = constants.O_RDONLY | NO_FOLLOW_FLAG;
 const CREATE_OBJECT_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NO_FOLLOW_FLAG;
 
-function requireAtomicNoFollow(id: string): void {
-	if (!HAS_ATOMIC_NO_FOLLOW) {
-		throw new Error(`Atomic no-follow object access is unavailable for ${id}`);
+async function verifyOpenedObject(handle: FileHandle, path: string, id: string): Promise<Stats> {
+	const objectsDirectory = dirname(path);
+	const storageDirectory = dirname(objectsDirectory);
+	const [storageDirectoryStats, objectsDirectoryStats, pathStats, handleStats] = await Promise.all([
+		lstat(storageDirectory),
+		lstat(objectsDirectory),
+		lstat(path),
+		handle.stat(),
+	]);
+	if (!storageDirectoryStats.isDirectory() || storageDirectoryStats.isSymbolicLink()) {
+		throw new Error(`Observation storage directory is not a regular directory for ${id}`);
 	}
+	if (!objectsDirectoryStats.isDirectory() || objectsDirectoryStats.isSymbolicLink()) {
+		throw new Error(`Observation directory is not a regular directory for ${id}`);
+	}
+	if (!pathStats.isFile() || pathStats.isSymbolicLink() || !handleStats.isFile()) {
+		throw new Error(`Content-addressed observation is not a regular file for ${id}`);
+	}
+	if (pathStats.dev !== handleStats.dev || pathStats.ino !== handleStats.ino) {
+		throw new Error(`Observation path changed while open for ${id}`);
+	}
+	return handleStats;
 }
 
 /**
@@ -139,14 +157,13 @@ export async function ensureStored(observation: Observation): Promise<void> {
 	let handle: FileHandle | undefined;
 	try {
 		handle = await open(observation.filePath, CREATE_OBJECT_FLAGS, 0o600);
+		await verifyOpenedObject(handle, observation.filePath, observation.id);
 		await handle.writeFile(observation.text, { encoding: "utf8" });
 	} catch (error) {
 		if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
-		requireAtomicNoFollow(observation.id);
 		const existingHandle = await open(observation.filePath, READ_OBJECT_FLAGS);
 		try {
-			const existing = await existingHandle.stat();
-			if (!existing.isFile()) throw new Error(`Content-addressed observation is not a regular file for ${observation.id}`);
+			const existing = await verifyOpenedObject(existingHandle, observation.filePath, observation.id);
 			if (existing.size !== observation.bytes) {
 				throw new Error(`Content-addressed observation size mismatch for ${observation.id}`);
 			}
@@ -222,11 +239,9 @@ export async function readRecallChunk(
 	offset: number,
 	limits: { readonly maxBytes: number; readonly maxLines: number },
 ): Promise<RecallChunk> {
-	requireAtomicNoFollow("recall");
 	const handle = await open(path, READ_OBJECT_FLAGS);
 	try {
-		const fileStats = await handle.stat();
-		if (!fileStats.isFile()) throw new Error("Stored observation is not a regular file");
+		const fileStats = await verifyOpenedObject(handle, path, "recall");
 		if (offset > fileStats.size) throw new Error(`Offset ${offset} exceeds observation size ${fileStats.size}`);
 
 		const available = Math.max(0, fileStats.size - offset);
