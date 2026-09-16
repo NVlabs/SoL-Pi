@@ -58,6 +58,20 @@ describe("Online Context Compact state snapshots", () => {
 		expect(restoreOnlineState(manager.entries)).toEqual(state);
 	});
 
+	it("resets an oversized legacy plan without rolling back the latest accounting", () => {
+		const manager = new FakeSessionManager();
+		const pi = new FakePi(manager);
+		const legacy = {
+			...recordProviderRequest(initialOnlineState(), 1_000),
+			plan: [{ id: "legacy", goal: "g".repeat(1_001), status: "in_progress" as const }],
+			cacheDebtTokens: 900,
+			cacheDebtRepaymentTokens: 300,
+		};
+		appendOnlineState(pi.asExtensionApi(), legacy);
+
+		expect(restoreOnlineState(manager.entries)).toEqual({ ...legacy, plan: [] });
+	});
+
 	it("counts requests, positive context growth, and cache-debt repayment", () => {
 		const charged = {
 			...initialOnlineState(),
