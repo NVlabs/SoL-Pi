@@ -34,10 +34,10 @@
 		]
 	},
 	"peerDependencies": {
-		"@earendil-works/pi-agent-core": ">=0.81.1",
-		"@earendil-works/pi-ai": ">=0.81.1",
-		"@earendil-works/pi-coding-agent": ">=0.81.1",
-		"@earendil-works/pi-tui": ">=0.81.1",
+		"@earendil-works/pi-agent-core": ">=0.84.2 <0.86.0",
+		"@earendil-works/pi-ai": ">=0.84.2 <0.86.0",
+		"@earendil-works/pi-coding-agent": ">=0.84.2 <0.86.0",
+		"@earendil-works/pi-tui": ">=0.84.2 <0.86.0",
 		"typebox": "*"
 	},
 	"devDependencies": {

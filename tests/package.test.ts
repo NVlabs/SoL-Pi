@@ -45,7 +45,7 @@ describe("published package", () => {
 			"@earendil-works/pi-coding-agent",
 			"@earendil-works/pi-tui",
 		]) {
-			expect(packageJson.peerDependencies[packageName]).toBe(">=0.81.1");
+			expect(packageJson.peerDependencies[packageName]).toBe(">=0.84.2 <0.86.0");
 		}
 	});
 

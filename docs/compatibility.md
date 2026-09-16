@@ -2,7 +2,7 @@
 
 SoL-Pi is developed and tested against `@earendil-works/pi-coding-agent` 0.85.1 and remains compatible with the originally supported 0.84.2 release. The current 19 test files (140 tests), type checking, package inspection, public API checks, and offline extension startup passed on both releases. Previous checks covered the public API surface of Pi 0.81.1, the base used by the original Pi fork; they are not a current full-suite compatibility guarantee. The runtime range is deliberately expressed as a peer dependency because Pi owns installation and upgrade of its packages; it is not a guarantee for every Pi version.
 
-SoL-Pi declares Pi package peers at `>=0.81.1`, matching the oldest public API surface it exercises. SoL-Pi imports only public package exports:
+SoL-Pi declares Pi package peers at `>=0.84.2 <0.86.0`, matching the fully validated runtime range without admitting unverified pre-1.0 minor releases. Pi 0.81.1 remains an API compatibility check rather than a supported runtime baseline. SoL-Pi imports only public package exports:
 
 - `createEditToolDefinition`
 - `createWriteToolDefinition`
