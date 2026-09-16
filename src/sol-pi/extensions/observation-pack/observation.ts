@@ -18,14 +18,14 @@ export const PLACEHOLDER_EXCERPT_BYTES = 1024;
 
 const CHARS_PER_TOKEN = 4;
 const OBSERVATION_ID_PATTERN = /^obs_[a-f0-9]{24}$/u;
-const NO_FOLLOW_FLAG = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
+const HAS_ATOMIC_NO_FOLLOW = typeof constants.O_NOFOLLOW === "number" && constants.O_NOFOLLOW !== 0;
+const NO_FOLLOW_FLAG = HAS_ATOMIC_NO_FOLLOW ? constants.O_NOFOLLOW : 0;
 const READ_OBJECT_FLAGS = constants.O_RDONLY | NO_FOLLOW_FLAG;
 const CREATE_OBJECT_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NO_FOLLOW_FLAG;
 
-async function assertRegularObjectPath(path: string, id: string): Promise<void> {
-	const pathStats = await lstat(path);
-	if (!pathStats.isFile() || pathStats.isSymbolicLink()) {
-		throw new Error(`Content-addressed observation is not a regular file for ${id}`);
+function requireAtomicNoFollow(id: string): void {
+	if (!HAS_ATOMIC_NO_FOLLOW) {
+		throw new Error(`Atomic no-follow object access is unavailable for ${id}`);
 	}
 }
 
@@ -142,7 +142,7 @@ export async function ensureStored(observation: Observation): Promise<void> {
 		await handle.writeFile(observation.text, { encoding: "utf8" });
 	} catch (error) {
 		if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
-		await assertRegularObjectPath(observation.filePath, observation.id);
+		requireAtomicNoFollow(observation.id);
 		const existingHandle = await open(observation.filePath, READ_OBJECT_FLAGS);
 		try {
 			const existing = await existingHandle.stat();
@@ -222,11 +222,11 @@ export async function readRecallChunk(
 	offset: number,
 	limits: { readonly maxBytes: number; readonly maxLines: number },
 ): Promise<RecallChunk> {
+	requireAtomicNoFollow("recall");
 	const handle = await open(path, READ_OBJECT_FLAGS);
 	try {
 		const fileStats = await handle.stat();
 		if (!fileStats.isFile()) throw new Error("Stored observation is not a regular file");
-		await assertRegularObjectPath(path, "recall");
 		if (offset > fileStats.size) throw new Error(`Offset ${offset} exceeds observation size ${fileStats.size}`);
 
 		const available = Math.max(0, fileStats.size - offset);
