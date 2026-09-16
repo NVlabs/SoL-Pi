@@ -121,7 +121,7 @@ function serializeProgressEvidence(summary: ProgressSummary): string {
 		...(summary.verification.length > 0 ? { verification: summary.verification } : {}),
 		...(summary.decisions.length > 0 ? { decisions: summary.decisions } : {}),
 		...(summary.nextWork.length > 0 ? { nextWork: summary.nextWork } : {}),
-	});
+	}).replaceAll("<", "\\u003c");
 }
 
 /**
