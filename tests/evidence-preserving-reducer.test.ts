@@ -297,6 +297,18 @@ describe("evidence-preserving reducer", () => {
 		expect(performance.now() - startedAt).toBeLessThan(250);
 	});
 
+	it("preserves quoted empty Cargo option values and shell comments", () => {
+		expect(DIAGNOSTIC_COMMAND.test("cargo test # cargo publish")).toBe(true);
+		for (const command of [
+			"cargo -C '' publish test",
+			"cargo --config '' login test",
+			"cargo -Z '' login test",
+			"cargo login # ; cargo test",
+		]) {
+			expect([command, DIAGNOSTIC_COMMAND.test(command)]).toEqual([command, false]);
+		}
+	});
+
 	it("loads a configured reducer provider/model route", async () => {
 		const root = await storeRoot();
 		const config = loadReducerConfig(root, {

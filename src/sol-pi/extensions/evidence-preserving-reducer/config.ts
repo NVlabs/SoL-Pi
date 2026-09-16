@@ -42,14 +42,17 @@ function shellCommandSegments(command: string): readonly (readonly string[])[] |
 	const segments: string[][] = [];
 	let segment: string[] = [];
 	let token = "";
+	let tokenStarted = false;
 	let quote: "\"" | "'" | undefined;
 	let escaped = false;
+	let comment = false;
 	let tokenCount = 0;
 
 	const pushToken = (): boolean => {
-		if (token.length === 0) return true;
+		if (!tokenStarted) return true;
 		segment.push(token);
 		token = "";
+		tokenStarted = false;
 		tokenCount += 1;
 		return tokenCount <= MAX_COMMAND_TOKENS;
 	};
@@ -59,8 +62,16 @@ function shellCommandSegments(command: string): readonly (readonly string[])[] |
 	};
 
 	for (const character of command) {
+		if (comment) {
+			if (character === "\n") {
+				comment = false;
+				pushSegment();
+			}
+			continue;
+		}
 		if (escaped) {
 			token += character;
+			tokenStarted = true;
 			escaped = false;
 			continue;
 		}
@@ -75,7 +86,12 @@ function shellCommandSegments(command: string): readonly (readonly string[])[] |
 			continue;
 		}
 		if (character === "\"" || character === "'") {
+			tokenStarted = true;
 			quote = character;
+			continue;
+		}
+		if (character === "#" && !tokenStarted) {
+			comment = true;
 			continue;
 		}
 		if (character === "\n" || ";|&()".includes(character)) {
@@ -88,6 +104,7 @@ function shellCommandSegments(command: string): readonly (readonly string[])[] |
 			continue;
 		}
 		token += character;
+		tokenStarted = true;
 	}
 
 	if (escaped || quote !== undefined || !pushToken()) return undefined;
