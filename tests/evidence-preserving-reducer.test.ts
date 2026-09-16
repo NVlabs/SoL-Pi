@@ -244,6 +244,16 @@ describe("evidence-preserving reducer", () => {
 			"cargo publish",
 			"cargo login",
 			"cargo install cargo-nextest",
+			"cargo login cargo test",
+			"cargo install cargo test",
+			"cargo publish --package cargo test",
+			"cargo --color test",
+			"cargo --color= test",
+			"cargo --color sometimes test",
+			"cargo --color=sometimes test",
+			"cargo --config test",
+			"cargo --config= test",
+			"echo cargo test",
 		]) {
 			expect([command, DIAGNOSTIC_COMMAND.test(command)]).toEqual([command, false]);
 		}
@@ -267,11 +277,24 @@ describe("evidence-preserving reducer", () => {
 		for (const command of [
 			"cargo --locked test",
 			"cargo --color always check",
+			"cargo --color=always check",
 			"cargo +nightly --offline build",
 			"cargo --config net.offline=true test",
+			"cargo --config=net.offline=true test",
+			"cargo -vv -Z unstable-options -C repo check",
+			"CARGO_TERM_COLOR=always cargo --frozen test",
+			"cargo login; cargo test",
 		]) {
 			expect([command, DIAGNOSTIC_COMMAND.test(command)]).toEqual([command, true]);
 		}
+	});
+
+	it("checks adversarial Cargo option input within a bounded time", () => {
+		const command = `cargo ${"--color ".repeat(35)}publish`;
+		const startedAt = performance.now();
+
+		expect(DIAGNOSTIC_COMMAND.test(command)).toBe(false);
+		expect(performance.now() - startedAt).toBeLessThan(250);
 	});
 
 	it("loads a configured reducer provider/model route", async () => {
