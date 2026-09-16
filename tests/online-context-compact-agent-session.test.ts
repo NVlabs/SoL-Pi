@@ -142,9 +142,9 @@ async function runCompactionScenario(requestedCompactions: 1 | 2): Promise<void>
 			expect(request.reason).toBe("manual");
 			expect(request.customInstructions).toContain(BOUNDARY_COMPACTION_INSTRUCTIONS);
 			// The progress recorded through the real tool reaches the summarizer.
-			expect(request.customInstructions).toContain("- step build: build it");
-			expect(request.customInstructions).toContain("files changed: src/a.ts");
-			expect(request.customInstructions).toContain("verification: tests passed");
+			expect(request.customInstructions).toContain('"stepId":"build","goal":"build it"');
+			expect(request.customInstructions).toContain('"filesChanged":["src/a.ts"]');
+			expect(request.customInstructions).toContain('"verification":["tests passed"]');
 		}
 		const branch = sessionManager.getBranch();
 		expect(branch.filter((entry) => entry.type === "compaction")).toHaveLength(requestedCompactions);
