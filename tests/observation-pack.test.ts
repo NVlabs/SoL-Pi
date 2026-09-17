@@ -128,6 +128,58 @@ describe("observation pack", () => {
 		expect(await readFile(observationPath(sessionDir, id!), "utf8")).toBe(body);
 	});
 
+	it("packs only while obs_recall is active and checks availability on every projection", async () => {
+		vi.useFakeTimers();
+		const sessionDir = await sessionRoot();
+		const body = `availability guard\n${"x".repeat(THRESHOLD_BYTES + 1)}\n`;
+		const message = toolResult(body);
+		const original = structuredClone(message);
+		const id = observationId(message);
+		const pi = observationPackPi();
+		let activeTools = ["read"];
+		vi.spyOn(pi, "getActiveTools").mockImplementation(() => activeTools);
+		const notify = vi.fn();
+		const context = fakeContext(sessionDir, {
+			mode: "tui",
+			hasUI: true,
+			ui: { notify, setStatus: vi.fn() } as never,
+		});
+
+		const unavailable: string[] = [];
+		for (let index = 0; index < 4; index += 1) {
+			unavailable.push(resultText((await pi.emitContext([message], context))[0]!));
+		}
+		expect(unavailable).toEqual([body, body, body, body]);
+		expect(message).toEqual(original);
+		expect(notify).not.toHaveBeenCalled();
+		await expect(readFile(observationPath(sessionDir, id), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+		await expect(
+			readFile(join(sessionDir, "sol-pi", SESSION_ID, "observation-pack", "ledger.jsonl"), "utf8"),
+		).rejects.toMatchObject({ code: "ENOENT" });
+
+		activeTools = ["read", "obs_recall"];
+		const active: string[] = [];
+		for (let index = 0; index < 3; index += 1) {
+			active.push(resultText((await pi.emitContext([message], context))[0]!));
+		}
+		expect(active[0]).toBe(body);
+		expect(active[1]).toBe(body);
+		expect(active[2]).toMatch(new RegExp(`^\\[large tool result replaced.*id: ${id}`, "su"));
+		expect(notify).toHaveBeenCalledTimes(1);
+		expect(await readFile(observationPath(sessionDir, id), "utf8")).toBe(body);
+
+		const recalled = await pi
+			.tool("obs_recall")
+			.execute("recall-availability", { id, offset: 0 }, undefined, undefined, context);
+		expect(recalled.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n")).toContain(body);
+
+		activeTools = ["read"];
+		expect(resultText((await pi.emitContext([message], context))[0]!)).toBe(body);
+		expect(await readFile(observationPath(sessionDir, id), "utf8")).toBe(body);
+		activeTools = ["read", "obs_recall"];
+		expect(resultText((await pi.emitContext([message], context))[0]!)).toBe(active[2]);
+	});
+
 	it("announces the first measured placeholder saving only in TUI mode", async () => {
 		vi.useFakeTimers();
 		const sessionDir = await sessionRoot();
