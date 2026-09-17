@@ -23,7 +23,7 @@ export const DEFAULT_REDUCER_PROVIDER = ["openai", "codex"].join("-");
 export const DEFAULT_REDUCER_MODEL = ["gpt-5.6", "luna"].join("-");
 
 const NON_CARGO_DIAGNOSTIC_COMMAND =
-	/(?:^|[;&|()\s])(?:lake\s+build|lake\s+env\s+lean|lean|coq|zig\s+build|pytest|python(?:3)?\s+-m\s+(?:pytest|unittest|py_compile)|ctest|cmake\s+--build|ninja|make|npm\s+test|pnpm\s+test|yarn\s+test|go\s+test|bazel\s+test)(?:\s|$)/i;
+	/^(?:lake\0build|lake\0env\0lean|lean|coq|zig\0build|pytest|python(?:3)?\0-m\0(?:pytest|unittest|py_compile)|ctest|cmake\0--build|ninja|make|npm\0test|pnpm\0test|yarn\0test|go\0test|bazel\0test)(?:\0|$)/i;
 
 const CARGO_DIAGNOSTIC_SUBCOMMANDS = new Set(["build", "check", "test"]);
 const CARGO_GLOBAL_FLAGS = new Set([
@@ -70,9 +70,11 @@ function shellCommandSegments(command: string): readonly (readonly string[])[] |
 			continue;
 		}
 		if (escaped) {
+			escaped = false;
+			if (character === "\n") continue;
+			if (quote === "\"" && !"$`\"\\".includes(character)) token += "\\";
 			token += character;
 			tokenStarted = true;
-			escaped = false;
 			continue;
 		}
 		if (quote !== undefined) {
@@ -116,9 +118,11 @@ function isShellAssignment(token: string): boolean {
 	return /^[A-Za-z_][A-Za-z0-9_]*=/u.test(token);
 }
 
-function segmentRunsDiagnosticCargo(tokens: readonly string[]): boolean {
+function segmentRunsDiagnostic(tokens: readonly string[]): boolean {
 	let index = 0;
 	while (isShellAssignment(tokens[index] ?? "")) index += 1;
+	// NUL separates argv entries without treating whitespace inside an entry as a boundary.
+	if (NON_CARGO_DIAGNOSTIC_COMMAND.test(tokens.slice(index).join("\0"))) return true;
 	if ((tokens[index] ?? "").toLowerCase() !== "cargo") return false;
 	index += 1;
 
@@ -154,8 +158,8 @@ function segmentRunsDiagnosticCargo(tokens: readonly string[]): boolean {
 }
 
 function isDiagnosticCommand(command: string): boolean {
-	if (NON_CARGO_DIAGNOSTIC_COMMAND.test(command)) return true;
-	return shellCommandSegments(command)?.some(segmentRunsDiagnosticCargo) ?? false;
+	if (command.includes("\0")) return false;
+	return shellCommandSegments(command)?.some(segmentRunsDiagnostic) ?? false;
 }
 
 export const DIAGNOSTIC_COMMAND = Object.freeze({ test: isDiagnosticCommand });

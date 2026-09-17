@@ -259,13 +259,18 @@ describe("evidence-preserving reducer", () => {
 		}
 	});
 
-	it("leaves a non-diagnostic cargo result untouched", async () => {
+	it.each([
+		"cargo publish",
+		"cargo login # pytest -q",
+		"echo '# pytest -q'",
+		String.raw`cargo "\test"`,
+	])("leaves a non-diagnostic result untouched: %s", async (command) => {
 		const root = await storeRoot();
 		const body = `Updating crates.io index\n${"compiling dependency\n".repeat(400)}`;
 		const complete = vi.fn();
 		const { context, manager, pi } = load(root, complete as unknown as Complete);
 
-		const event = bashEvent(body, { input: { command: "cargo publish" }, isError: false });
+		const event = bashEvent(body, { input: { command }, isError: false });
 		const result = await pi.emit("tool_result", event, context);
 
 		expect(result).toBeUndefined();
@@ -306,6 +311,34 @@ describe("evidence-preserving reducer", () => {
 			"cargo login # ; cargo test",
 		]) {
 			expect([command, DIAGNOSTIC_COMMAND.test(command)]).toEqual([command, false]);
+		}
+	});
+
+	it.each([
+		"cargo login # pytest -q",
+		"echo '# pytest -q'",
+		"echo pytest -q",
+		"cargo login pytest -q",
+		'"python -m pytest"',
+		'npm "test extra"',
+		'npm "test\0extra"',
+		String.raw`cargo "\test"`,
+		String.raw`cargo "\\test"`,
+	])("rejects diagnostic names in shell data: %s", (command) => {
+		expect(DIAGNOSTIC_COMMAND.test(command)).toBe(false);
+	});
+
+	it("recognizes diagnostic tokens after shell parsing", () => {
+		for (const command of [
+			"cd repo && pytest -q",
+			"MODE=test python3 -m pytest",
+			"echo '# ignored'; npm test",
+			"cargo login # ignored\npytest -q",
+			'cargo "te"st',
+			'cargo "te\\\nst"',
+			"cargo te\\\nst",
+		]) {
+			expect([command, DIAGNOSTIC_COMMAND.test(command)]).toEqual([command, true]);
 		}
 	});
 
