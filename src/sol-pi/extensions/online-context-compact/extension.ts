@@ -15,6 +15,7 @@ import {
 import { formatSavingsCount, showSolPiSavings } from "../../tui.ts";
 import {
 	DEFAULT_COMPACTION_ECONOMICS,
+	DEFAULT_SUBSEQUENT_COMPACTION_COOLDOWN_REQUESTS,
 	decideCompaction,
 	type CompactionDecision,
 } from "./economics.ts";
@@ -24,6 +25,7 @@ import {
 	initialOnlineState,
 	recordBoundary,
 	recordCompaction,
+	recordCompletedPlanHandoff,
 	recordCorrection,
 	recordProviderRequest,
 	restoreOnlineState,
@@ -68,6 +70,18 @@ function resolveCacheWriteReadRatio(value: number | null | undefined): number | 
 
 function tokenEstimate(text: string): number {
 	return Math.ceil(Buffer.byteLength(text) / 4);
+}
+
+function resolveMemoTokens(lastMemoTokens: number): number {
+	return Math.max(DEFAULT_NATIVE_SUMMARY_TOKEN_ESTIMATE, lastMemoTokens);
+}
+
+function compactionSummary(event: { readonly compactionEntry?: { readonly summary?: unknown }; readonly summary?: unknown }): string | undefined {
+	if (typeof event.compactionEntry?.summary === "string" && event.compactionEntry.summary.length > 0) {
+		return event.compactionEntry.summary;
+	}
+	if (typeof event.summary === "string" && event.summary.length > 0) return event.summary;
+	return undefined;
 }
 
 function result(text: string, details: Readonly<Record<string, unknown>>): AgentToolResult<Readonly<Record<string, unknown>>> {
@@ -165,6 +179,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 		let activeDebt: CacheDebt | undefined;
 		let nextContinuation: PendingContinuation | undefined;
 		let compactionInFlight = false;
+		let pendingMemoTokens = 0;
 
 		const releaseContinuation = (): void => {
 			const continuation = nextContinuation;
@@ -187,6 +202,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 			selected = undefined;
 			activeDebt = undefined;
 			compactionInFlight = false;
+			pendingMemoTokens = 0;
 		};
 		const ensureRestored = (context: ExtensionContext): void => {
 			if (!restored) restore(context);
@@ -245,15 +261,21 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 		});
 
 		pi.on("input", (event, context) => {
-			if (event.streamingBehavior !== "steer" && !event.text.startsWith("CORRECTION:")) {
+			if (event.streamingBehavior === "steer" || event.text.startsWith("CORRECTION:")) {
+				ensureRestored(context);
+				pendingBoundary = undefined;
+				selected = undefined;
+				activeDebt = undefined;
+				state = recordCorrection(state);
+				save();
 				return { action: "continue" as const };
 			}
 			ensureRestored(context);
-			pendingBoundary = undefined;
-			selected = undefined;
-			activeDebt = undefined;
-			state = recordCorrection(state);
-			save();
+			const next = recordCompletedPlanHandoff(state);
+			if (next !== state) {
+				state = next;
+				save();
+			}
 			return { action: "continue" as const };
 		});
 
@@ -289,7 +311,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 			const priced = decideCompaction({
 				writeTokens,
 				archiveTokens,
-				memoTokens: DEFAULT_NATIVE_SUMMARY_TOKEN_ESTIMATE,
+				memoTokens: resolveMemoTokens(state.lastMemoTokens),
 				contextTokens: writeTokens,
 				completedBoundaryRequestCounts: state.completedBoundaryRequestCounts,
 				remainingBoundaries: state.plan.filter((step) => step.status !== "completed").length,
@@ -300,6 +322,10 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 				cacheDebtRepaymentTokens: state.cacheDebtRepaymentTokens,
 				cacheWriteReadRatio,
 				economics: DEFAULT_COMPACTION_ECONOMICS,
+				minimumSavingTokens: keepRecentTokens,
+				requestsSinceCompaction:
+					state.nativeCompactionCount === 0 ? null : Math.max(0, state.requestCount - state.lastCompactionRequestCount),
+				subsequentCompactionCooldownRequests: DEFAULT_SUBSEQUENT_COMPACTION_COOLDOWN_REQUESTS,
 			});
 			const decision: CompactionDecision =
 				priced.compact && !nativeCompactionFeasible(context.sessionManager.getBranch(), keepRecentTokens)
@@ -348,9 +374,10 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 						onComplete: (compaction) => {
 							try {
 								compacted = true;
+								pendingMemoTokens = tokenEstimate(compaction.summary);
 								const removed = Math.max(
 									0,
-									pending.decision.archiveTokens - tokenEstimate(compaction.summary),
+									pending.decision.archiveTokens - pendingMemoTokens,
 								);
 								if (removed > 0) {
 									showSolPiSavings(
@@ -417,10 +444,13 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 
 		pi.on("session_compact", (event, context) => {
 			ensureRestored(context);
-			state = recordCompaction(
-				state,
-				event.fromExtension || !activeDebt ? { debtTokens: 0, repaymentTokens: 0 } : activeDebt,
-			);
+			const summary = compactionSummary(event);
+			const memoTokens = pendingMemoTokens > 0 ? pendingMemoTokens : summary ? tokenEstimate(summary) : undefined;
+			pendingMemoTokens = 0;
+			state = recordCompaction(state, {
+				...(event.fromExtension || !activeDebt ? { debtTokens: 0, repaymentTokens: 0 } : activeDebt),
+				memoTokens,
+			});
 			save();
 			pendingBoundary = undefined;
 			selected = undefined;
@@ -437,6 +467,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 			selected = undefined;
 			activeDebt = undefined;
 			compactionInFlight = false;
+			pendingMemoTokens = 0;
 		});
 	};
 }

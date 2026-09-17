@@ -207,7 +207,39 @@ describe("Online Context Compact extension", () => {
 		await firstSettlement;
 		expect(firstSettlementFinished).toBe(true);
 		expect(await pi.emit("session_before_tree", { type: "session_before_tree" }, context)).toBeUndefined();
-		expect(restoreOnlineState(manager.entries)).toMatchObject({ nativeCompactionCount: 1, pendingProgress: [] });
+		expect(restoreOnlineState(manager.entries)).toMatchObject({
+			nativeCompactionCount: 1,
+			pendingProgress: [],
+			completedBoundaryRequestCounts: [],
+			lastMemoTokens: Math.ceil(Buffer.byteLength("summary") / 4),
+		});
+	});
+
+	it("starts a new request horizon when the next user turn follows a completed plan", async () => {
+		const manager = new FakeSessionManager();
+		const pi = new FakePi(manager);
+		createOnlineContextCompactExtension({ cacheWriteReadRatio: null, keepRecentTokens: 50_000 })(pi.asExtensionApi());
+		const context = fakeContext(manager, { getSystemPrompt: () => "test prompt" });
+
+		await pi.emit("session_start", { type: "session_start" }, context);
+		await pi.emit("before_provider_request", { type: "before_provider_request", payload: {} }, context);
+		await runPlan(pi, context, "plan-open", { steps: OPEN });
+		await pi.emit("before_provider_request", { type: "before_provider_request", payload: {} }, context);
+		await runPlan(pi, context, "plan-done", { steps: DONE, progress: PROGRESS });
+
+		expect(restoreOnlineState(manager.entries).completedBoundaryRequestCounts).toEqual([2]);
+
+		await pi.emit(
+			"input",
+			{ type: "input", text: "start the follow-up task", streamingBehavior: "followUp" },
+			context,
+		);
+
+		expect(restoreOnlineState(manager.entries)).toMatchObject({
+			plan: [],
+			completedBoundaryRequestCounts: [],
+			nativeCompactionCount: 0,
+		});
 	});
 });
 
