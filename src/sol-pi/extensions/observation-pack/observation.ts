@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import { constants, type Stats } from "node:fs";
 import { type FileHandle, lstat, mkdir, open } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { TextContent, ToolResultMessage } from "@earendil-works/pi-ai";
 
@@ -23,21 +23,34 @@ const NO_FOLLOW_FLAG = HAS_ATOMIC_NO_FOLLOW ? constants.O_NOFOLLOW : 0;
 const READ_OBJECT_FLAGS = constants.O_RDONLY | NO_FOLLOW_FLAG;
 const CREATE_OBJECT_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NO_FOLLOW_FLAG;
 
-async function verifyOpenedObject(handle: FileHandle, path: string, id: string): Promise<Stats> {
-	const objectsDirectory = dirname(path);
-	const storageDirectory = dirname(objectsDirectory);
-	const [storageDirectoryStats, objectsDirectoryStats, pathStats, handleStats] = await Promise.all([
-		lstat(storageDirectory),
-		lstat(objectsDirectory),
+async function verifyStorageDirectories(path: string, sessionDirectory: string, id: string, create = false): Promise<void> {
+	const subpath = relative(sessionDirectory, dirname(path));
+	if (!subpath || isAbsolute(subpath) || subpath.split(sep).includes("..")) {
+		throw new Error(`Observation directory is outside the trusted session directory for ${id}`);
+	}
+	let directory = resolve(sessionDirectory);
+	for (const component of subpath.split(sep)) {
+		directory = join(directory, component);
+		if (create) {
+			try {
+				await mkdir(directory, { mode: 0o700 });
+			} catch (error) {
+				if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
+			}
+		}
+		const stats = await lstat(directory);
+		if (!stats.isDirectory() || stats.isSymbolicLink()) {
+			throw new Error(`Observation directory is not a regular directory for ${id}`);
+		}
+	}
+}
+
+async function verifyOpenedObject(handle: FileHandle, path: string, id: string, sessionDirectory: string): Promise<Stats> {
+	await verifyStorageDirectories(path, sessionDirectory, id);
+	const [pathStats, handleStats] = await Promise.all([
 		lstat(path),
 		handle.stat(),
 	]);
-	if (!storageDirectoryStats.isDirectory() || storageDirectoryStats.isSymbolicLink()) {
-		throw new Error(`Observation storage directory is not a regular directory for ${id}`);
-	}
-	if (!objectsDirectoryStats.isDirectory() || objectsDirectoryStats.isSymbolicLink()) {
-		throw new Error(`Observation directory is not a regular directory for ${id}`);
-	}
 	if (!pathStats.isFile() || pathStats.isSymbolicLink() || !handleStats.isFile()) {
 		throw new Error(`Content-addressed observation is not a regular file for ${id}`);
 	}
@@ -146,24 +159,19 @@ export function createObservation(message: ToolResultMessage, runtimeRoot: strin
  * Write the payload to its content-addressed path, refusing symlinks and
  * verifying an existing object byte for byte before reusing it.
  */
-export async function ensureStored(observation: Observation): Promise<void> {
-	const directoryPath = dirname(observation.filePath);
-	await mkdir(directoryPath, { recursive: true, mode: 0o700 });
-	const directoryStats = await lstat(directoryPath);
-	if (!directoryStats.isDirectory() || directoryStats.isSymbolicLink()) {
-		throw new Error(`Observation directory is not a regular directory for ${observation.id}`);
-	}
+export async function ensureStored(observation: Observation, sessionDirectory: string): Promise<void> {
+	await verifyStorageDirectories(observation.filePath, sessionDirectory, observation.id, true);
 
 	let handle: FileHandle | undefined;
 	try {
 		handle = await open(observation.filePath, CREATE_OBJECT_FLAGS, 0o600);
-		await verifyOpenedObject(handle, observation.filePath, observation.id);
+		await verifyOpenedObject(handle, observation.filePath, observation.id, sessionDirectory);
 		await handle.writeFile(observation.text, { encoding: "utf8" });
 	} catch (error) {
 		if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
 		const existingHandle = await open(observation.filePath, READ_OBJECT_FLAGS);
 		try {
-			const existing = await verifyOpenedObject(existingHandle, observation.filePath, observation.id);
+			const existing = await verifyOpenedObject(existingHandle, observation.filePath, observation.id, sessionDirectory);
 			if (existing.size !== observation.bytes) {
 				throw new Error(`Content-addressed observation size mismatch for ${observation.id}`);
 			}
@@ -238,10 +246,12 @@ export async function readRecallChunk(
 	path: string,
 	offset: number,
 	limits: { readonly maxBytes: number; readonly maxLines: number },
+	sessionDirectory: string,
 ): Promise<RecallChunk> {
+	await verifyStorageDirectories(path, sessionDirectory, "recall");
 	const handle = await open(path, READ_OBJECT_FLAGS);
 	try {
-		const fileStats = await verifyOpenedObject(handle, path, "recall");
+		const fileStats = await verifyOpenedObject(handle, path, "recall", sessionDirectory);
 		if (offset > fileStats.size) throw new Error(`Offset ${offset} exceeds observation size ${fileStats.size}`);
 
 		const available = Math.max(0, fileStats.size - offset);

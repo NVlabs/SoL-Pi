@@ -25,7 +25,9 @@ The queue covers only fused operations registered by this SoL-Pi instance. Exter
 
 ObservationPack changes only the messages projected through the public `context` event. Stored session history remains intact. Original bytes and the JSONL ledger live under the session-derived SoL-Pi directory.
 
-Object access uses `O_NOFOLLOW` when the platform exposes it. Every opened object is also checked against its pathname identity before any bytes are read or written, and its storage directories are revalidated after the open. This preserves symlink rejection on platforms such as Windows where Node does not expose an atomic no-follow flag.
+The directory returned by Pi's `SessionManager.getSessionDir()` is the trusted storage boundary; Pi's session directory and its ancestors must remain under the user's control. Before creating or opening an object, ObservationPack checks every descendant directory (`sol-pi`, the session id, `observation-pack`, and `objects`). Missing directories are created individually, and each component must be an ordinary directory before traversal continues. The complete descendant chain is checked again after object open, before reading or writing payload bytes. Pre-existing symlinks and Windows junctions reported as symbolic links by Node's `lstat()` are rejected, including a linked runtime root.
+
+Object access also uses `O_NOFOLLOW` where available, and requires the pathname and open handle to identify the same regular file. These checks detect the tested directory substitutions and path-restoration races. Node's portable filesystem API does not provide directory-handle-relative traversal: the checks are not an atomic defense against a process that can repeatedly replace storage ancestors during validation. Other Windows reparse-point types are not covered by the junction tests. Native Windows execution remains an outstanding validation gate; the simulated no-`O_NOFOLLOW` lifecycle does not establish native reparse-point safety.
 
 ## Evidence-Preserving Reducer
 
