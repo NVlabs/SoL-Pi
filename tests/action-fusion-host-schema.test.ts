@@ -53,10 +53,35 @@ describe("hostToolProperties", () => {
 		});
 
 		// Unchecked cast: the rebuilt entries are the host's own JSON Schema fragments.
+
 		const properties = hostToolProperties(parameters) as Record<string, TSchema>;
 		const fused = Type.Object(properties);
 
 		expect(fused.required).toEqual(["path"]);
+	});
+
+	it("preserves optional fields in direct JSON Schema parameters", () => {
+		const properties = hostToolProperties({
+			properties: { path: { type: "string" }, encoding: { type: "string" } },
+			required: ["path"],
+		}) as Record<string, TSchema>;
+		expect(Type.Object(properties).required).toEqual(["path"]);
+	});
+
+	it("rejects throwing and malformed host schemas without replacing their tools", () => {
+		const throwsProperties = Object.defineProperty({}, "properties", {
+			get() { throw new Error("unsupported host schema"); },
+		});
+		const cases = [
+			throwsProperties,
+			{ toJsonSchema() { throw new Error("unsupported host schema"); } },
+			{ toJsonSchema() { return null; } },
+			{ toJsonSchema() { return { properties: { path: true } }; } },
+			{ properties: { path: false } },
+		];
+		for (const parameters of cases) {
+			expect(hostToolProperties(parameters)).toEqual({});
+		}
 	});
 
 	it("reports no properties when the host exposes neither surface", () => {

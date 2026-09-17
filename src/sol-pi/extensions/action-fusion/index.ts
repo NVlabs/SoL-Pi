@@ -70,32 +70,30 @@ function memoizeByCwd<T>(create: (cwd: string) => T): (cwd: string) => T {
  * The built-in tool's own parameter properties, which the fused tool re-declares
  * alongside `then_run`.
  *
- * Pi publishes them as a TypeBox `Type.Object`, so `parameters.properties` is
- * the whole contract. A Pi-compatible host may describe the same tool with its
- * own schema value instead — potentially callable rather than a plain object,
- * and exposing the contract only through `toJsonSchema()`. Reading `.properties`
- * alone yields `{}` there, which would publish a fused tool carrying `then_run`
- * and nothing else: the model can no longer send `path`, and the fused execute
- * path resolves an undefined target. Rebuild from `toJsonSchema()` in that case.
+ * Pi publishes them as a TypeBox `Type.Object`; compatible hosts may expose
+ * either a plain JSON Schema object or a callable `toJsonSchema()` value.
+ * Preserve JSON Schema's `required` list when rebuilding optional properties.
+ * Invalid or throwing host introspection must leave the built-in tool intact.
  */
 export function hostToolProperties(parameters: unknown): Record<string, unknown> {
-	if (!parameters || (typeof parameters !== "object" && typeof parameters !== "function")) return {};
-	if ("properties" in parameters) {
-		const properties = parameters.properties as Record<string, unknown>;
-		if (properties && Object.keys(properties).length > 0) return properties;
-	}
-	if (!("toJsonSchema" in parameters) || typeof parameters.toJsonSchema !== "function") return {};
-	const json = parameters.toJsonSchema() as {
-		properties?: Record<string, unknown>;
-		required?: readonly string[];
-	};
-	const required = new Set(json.required ?? []);
-	return Object.fromEntries(
-		Object.entries(json.properties ?? {}).map(([key, schema]) => [
+	try {
+		if (!parameters || (typeof parameters !== "object" && typeof parameters !== "function")) return {};
+		let json = parameters as { properties?: unknown; required?: unknown; toJsonSchema?: () => unknown };
+		if ((!json.properties || (typeof json.properties === "object" && Object.keys(json.properties).length === 0)) && typeof json.toJsonSchema === "function") {
+			json = json.toJsonSchema() as typeof json;
+		}
+		if (!json || typeof json !== "object" || !json.properties || typeof json.properties !== "object" || Array.isArray(json.properties)) return {};
+		if (json.required !== undefined && (!Array.isArray(json.required) || !json.required.every((key: unknown) => typeof key === "string"))) return {};
+		const required = new Set(json.required as string[] | undefined);
+		const entries = Object.entries(json.properties);
+		if (entries.some(([, schema]) => !schema || typeof schema !== "object" || Array.isArray(schema))) return {};
+		return Object.fromEntries(entries.map(([key, schema]) => [
 			key,
 			required.has(key) ? schema : Type.Optional(schema as never),
-		]),
-	);
+		]));
+	} catch {
+		return {};
+	}
 }
 
 export function createActionFusionExtension(options: ActionFusionOptions = {}): ExtensionFactory {
