@@ -258,6 +258,28 @@ describe("observation pack", () => {
 		).rejects.toMatchObject({ code: "ELOOP" });
 	});
 
+	it("aligns a recall offset that lands inside a character", async () => {
+		const sessionDir = await sessionRoot();
+		// Each "☾" is three UTF-8 bytes, so offsets 1 and 2 are inside the first one.
+		const body = `☾☾☾ moon log\n${repeatPastThreshold("observation bytes\n")}`;
+		const message = toolResult(body);
+		const id = observationId(message);
+		const pi = observationPackPi();
+		await project(pi, message, sessionDir, 3);
+
+		for (const requested of [1, 2]) {
+			const result = await pi
+				.tool("obs_recall")
+				.execute("recall-1", { id, offset: requested }, undefined, undefined, fakeContext(sessionDir));
+			const text = result.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
+
+			expect(text).not.toContain("�");
+			expect(text).toContain(`offset=3`);
+			expect(result.details).toMatchObject({ offset: 3 });
+			expect(text.split("\n").slice(2).join("\n").startsWith("☾☾ moon log")).toBe(true);
+		}
+	});
+
 	it("returns the exact original bytes across paged recall", async () => {
 		const sessionDir = await sessionRoot();
 		const body = `utf8: luna ☾\n${"0123456789abcdef\n".repeat(1_200)}final line`;
