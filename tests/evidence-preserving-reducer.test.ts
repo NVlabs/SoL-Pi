@@ -17,6 +17,7 @@ import {
 	REDUCER_RECEIPT_SCHEMA,
 } from "../src/sol-pi/extensions/evidence-preserving-reducer/index.ts";
 import { archiveBody } from "../src/sol-pi/extensions/evidence-preserving-reducer/archive.ts";
+import { LIKELY_SECRET } from "../src/sol-pi/extensions/evidence-preserving-reducer/config.ts";
 import {
 	callReducer,
 	type CompatComplete,
@@ -223,6 +224,91 @@ describe("evidence-preserving reducer", () => {
 		expect(DIAGNOSTIC_COMMAND.test("lake build")).toBe(true);
 		expect(DIAGNOSTIC_COMMAND.test("cargo test --all")).toBe(true);
 		expect(DIAGNOSTIC_COMMAND.test("rg test src")).toBe(false);
+	});
+
+	it("recognises password and private-key material as likely secrets", () => {
+		for (const line of [
+			"api_key=abc123",
+			"Authorization: Bearer abc",
+			"AWS_SECRET_ACCESS_KEY=abc",
+			"PGPASSWORD=hunter2",
+			"db_password: hunter2",
+			'  "password": "hunter2"',
+			"passphrase = hunter2",
+			"private key: MIIEvQIBADAN",
+			"-----BEGIN OPENSSH PRIVATE KEY-----",
+			"-----BEGIN RSA PRIVATE KEY-----",
+			"-----BEGIN ENCRYPTED PRIVATE KEY-----",
+			"-----BEGIN PGP PRIVATE KEY BLOCK-----",
+			"tool --password hunter2",
+			"tool --passphrase 'correct horse battery staple'",
+		]) {
+			expect([line, LIKELY_SECRET.test(line)]).toEqual([line, true]);
+		}
+		// Ordinary diagnostic output must stay reducible.
+		for (const line of [
+			"-----BEGIN CERTIFICATE-----",
+			"FAILED tests/test_auth.py::test_password_reset",
+			"assert password == expected",
+			"AssertionError: password = expected",
+			"AssertionError [ERR_ASSERTION]: password = expected",
+			"AssertionFailedError: password = expected",
+			"assert password_hash == expected_hash",
+			"  password_policy_enabled = True",
+			"E   AssertionError: expected 4 but received 5",
+			"Use --password to provide the credential.",
+			"The --passphrase option reads from standard input.",
+			"Pass the --password flag when prompted.",
+		]) {
+			expect([line, LIKELY_SECRET.test(line)]).toEqual([line, false]);
+		}
+	});
+
+	it.each([
+		{
+			name: "PGP private key armor",
+			secret: "-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: GnuPG v2\n\naGVsbG8=\n-----END PGP PRIVATE KEY BLOCK-----",
+		},
+		{
+			name: "a password flag value",
+			secret: "tool --password hunter2",
+		},
+	])("falls back before calling the reducer for $name", async ({ secret }) => {
+		const root = await storeRoot();
+		const body = ["FAILED tests/test_auth.py::test_secret_handling", secret, "diagnostic output\n".repeat(300)].join(
+			"\n",
+		);
+		const complete = vi.fn();
+		const { context, manager, pi } = load(root, complete as unknown as Complete);
+
+		const result = await pi.emit("tool_result", bashEvent(body), context);
+
+		expect(result).toBeUndefined();
+		expect(complete).not.toHaveBeenCalled();
+		expect(manager.customEntryData()).toEqual([
+			expect.objectContaining({ kind: "fallback", reason: "likely-secret" }),
+		]);
+	});
+
+	it("falls back instead of sending a private key to the reducer model", async () => {
+		const root = await storeRoot();
+		const body = [
+			"FAILED tests/test_deploy.py::test_signing_key",
+			"-----BEGIN OPENSSH PRIVATE KEY-----",
+			"b3BlbnNzaC1rZXktdjEAAAAA".repeat(200),
+			"-----END OPENSSH PRIVATE KEY-----",
+			"1 failed in 0.42s",
+		].join("\n");
+		const complete = vi.fn();
+		const { context, manager, pi } = load(root, complete as unknown as Complete);
+
+		const result = await pi.emit("tool_result", bashEvent(body), context);
+
+		expect(result).toBeUndefined();
+		expect(complete).not.toHaveBeenCalled();
+		expect(manager.customEntryData()).toEqual([
+			expect.objectContaining({ kind: "fallback", reason: "likely-secret" }),
+		]);
 	});
 
 	it("loads a configured reducer provider/model route", async () => {
