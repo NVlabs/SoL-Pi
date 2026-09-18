@@ -9,17 +9,34 @@ import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const queueTails = new Map<string, Promise<void>>();
+const WINDOWS_SHELL_DRIVE = /^\/(?:mnt\/|cygdrive\/)?([a-z])(?:\/(.*))?$/i;
 
 function stripToolPathPrefix(filePath: string): string {
 	return filePath.startsWith("@") ? filePath.slice(1) : filePath;
 }
 
+/**
+ * Git Bash, MSYS, Cygwin, and WSL hand Pi paths like `/c/src/app.ts`. On
+ * Windows, Pi's built-in mutation tools convert those to a native drive path
+ * before touching the filesystem, so the queue and hash guard must convert them
+ * the same way or they address a file the mutation never wrote.
+ */
+export function normalizeWindowsShellPath(filePath: string): string {
+	if (process.platform !== "win32") return filePath;
+	if (!filePath.startsWith("/") || filePath.startsWith("//") || filePath.includes("\\")) return filePath;
+	const match = WINDOWS_SHELL_DRIVE.exec(filePath);
+	if (!match?.[1]) return filePath;
+	return `${match[1].toUpperCase()}:\\${match[2]?.replaceAll("/", "\\") ?? ""}`;
+}
+
 export function resolveToolPath(cwd: string, filePath: string): string {
-	const stripped = stripToolPathPrefix(filePath);
+	const stripped = normalizeWindowsShellPath(stripToolPathPrefix(filePath));
 	// Pi accepts file URLs; the queue and hash guard must use the same target.
 	const expanded = stripped.startsWith("file://") ? fileURLToPath(stripped) : stripped;
 	if (expanded === "~") return homedir();
-	if (expanded.startsWith("~/")) return resolve(homedir(), expanded.slice(2));
+	if (expanded.startsWith("~/") || (process.platform === "win32" && expanded.startsWith("~\\"))) {
+		return resolve(homedir(), expanded.slice(2));
+	}
 	return resolve(cwd, expanded);
 }
 
