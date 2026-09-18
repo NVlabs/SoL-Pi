@@ -2,9 +2,13 @@
  * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  */
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { type FileHandle, mkdir, open, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isRecord, type ReducerConfig, sha256 } from "./config.ts";
+
+const HAS_ATOMIC_NO_FOLLOW = typeof constants.O_NOFOLLOW === "number" && constants.O_NOFOLLOW !== 0;
+const READ_OBJECT_FLAGS = constants.O_RDONLY | (HAS_ATOMIC_NO_FOLLOW ? constants.O_NOFOLLOW : 0);
 
 export interface ArchiveObject {
 	readonly hash: string;
@@ -38,9 +42,29 @@ export async function archiveBody(root: string, body: string): Promise<ArchiveOb
 		await writeFile(path, body, { encoding: "utf8", flag: "wx", mode: 0o600 });
 	} catch (error) {
 		if (!isRecord(error) || error.code !== "EEXIST") throw error;
-		const existing = await readFile(path, "utf8");
-		if (existing !== body || sha256(existing) !== hash) {
-			throw new Error(`Reducer archive integrity failure: ${path}`);
+		if (!HAS_ATOMIC_NO_FOLLOW) {
+			throw new Error(`Atomic no-follow archive access is unavailable: ${path}`);
+		}
+		let existingHandle: FileHandle | undefined;
+		try {
+			existingHandle = await open(path, READ_OBJECT_FLAGS);
+		} catch (openError) {
+			if (isRecord(openError) && openError.code === "ELOOP") {
+				throw new Error(`Reducer archive object is not a regular file: ${path}`);
+			}
+			throw openError;
+		}
+		try {
+			const existingStats = await existingHandle.stat();
+			if (!existingStats.isFile()) {
+				throw new Error(`Reducer archive object is not a regular file: ${path}`);
+			}
+			const existing = await existingHandle.readFile("utf8");
+			if (existing !== body || sha256(existing) !== hash) {
+				throw new Error(`Reducer archive integrity failure: ${path}`);
+			}
+		} finally {
+			await existingHandle.close();
 		}
 	}
 	return {
