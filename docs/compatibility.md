@@ -8,6 +8,7 @@ SoL-Pi imports only public package exports:
 - `createWriteToolDefinition`
 - `createBashToolDefinition`
 - extension types and `ExtensionAPI.registerTool`
+- `ExtensionAPI.getActiveTools()` and `ExtensionAPI.getAllTools()` when present, used only for pre-request reachability diagnostics
 - `context`, `before_provider_request`, `tool_result`, `turn_end`, `agent_settled`, and `session_before_tree` extension events
 - native compaction events, `ExtensionContext.getContextUsage()`, and `ExtensionContext.compact()`
 - `ExtensionContext.model` and `ExtensionContext.modelRegistry`
@@ -21,13 +22,15 @@ Action Fusion decodes `file://` targets with Node's `fileURLToPath()` before res
 
 The queue covers only fused operations registered by this SoL-Pi instance. External processes, direct built-in-tool calls outside the replacement, and unrelated extensions are not globally locked. SoL-Pi hashes the target immediately before launching `then_run` and skips the command if it observes an intervening content change.
 
+Action Fusion requires an active SoL-Pi `edit`/`write` registration exposing `then_run`. SoL-Pi tracks its registered parameter objects by identity (as exposed by Pi's public `getAllTools()`); an unrelated tool or replacement schema with the same field does not qualify. At each `before_provider_request`, after session and agent-start setup, SoL-Pi inspects `getActiveTools()` / `getAllTools()`. If no active fused path exists, it appends a `sol-pi-reachability-v1` session entry (not LLM context) and shows a TUI warning. Deduplication reads the current session branch: after tree navigation, a missing diagnostic is re-appended at the next request, while an inherited diagnostic is not duplicated. No provisional warning is persisted during `session_start`. A Pi build without either inspection API skips the diagnostic rather than failing to load. Code-mode and other flat-tool harnesses that already combine an edit and its follow-up command inside one model turn are outside Action Fusion's contract; the diagnostic exists so that inertness is not mistaken for a regression.
+
 ## ObservationPack
 
 ObservationPack changes only the messages projected through the public `context` event. Stored session history remains intact. Original bytes and the JSONL ledger live under the session-derived SoL-Pi directory.
 
 ## Evidence-Preserving Reducer
 
-The reducer handles public `tool_result` events and resolves the configured reducer provider/model through Pi's model registry before calling `ExtensionContext.modelRegistry.complete()` when available. For the Pi 0.81.1 fork, which exposes no registry `complete()` method, it resolves authentication for that reducer model through `getApiKeyAndHeaders()` and calls the shared `@earendil-works/pi-ai/compat` completion API. The reducer preserves the original result whenever the configured reducer model is unavailable or eligibility, model-call, schema, source-hash, exact-quote, size, or likely-secret checks fail.
+The reducer handles public `tool_result` events and resolves the configured reducer provider/model through Pi's model registry before calling `ExtensionContext.modelRegistry.complete()` when available. For the Pi 0.81.1 fork, which exposes no registry `complete()` method, it resolves authentication for that reducer model through `getApiKeyAndHeaders()` and calls the shared `@earendil-works/pi-ai/compat` completion API. The reducer preserves the original result whenever the configured reducer model is unavailable or eligibility, model-call, schema, source-hash, exact-quote, size, or likely-secret checks fail. A recovered body under `minBytes` journals `fallback` with `reason: "source-under-min-bytes"` so a quiet passing test run is distinguishable from a skipped non-candidate. The same pre-request inspection used by Action Fusion warns only when neither a configured `bash` nor an active SoL-Pi fused `edit`/`write` path exists, matching the reducer's accepted result kinds. A configured but inactive `bash` may still provide inner results through a flat-tool harness. This is a tool-surface diagnostic, not proof that a harness forwards those results.
 
 All persistent paths use `SessionManager.getSessionDir()` and `getSessionId()`, which are present in both the fork and Pi 0.85.1. SoL-Pi creates no configurable storage-path surface.
 

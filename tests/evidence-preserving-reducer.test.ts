@@ -531,7 +531,8 @@ describe("evidence-preserving reducer", () => {
 			throw new Error("unexpected model call");
 		});
 
-		expect(await pi.emit("tool_result", bashEvent("ERROR short"), context)).toBeUndefined();
+		const shortBody = "ERROR short";
+		expect(await pi.emit("tool_result", bashEvent(shortBody), context)).toBeUndefined();
 		expect(
 			await pi.emit(
 				"tool_result",
@@ -540,5 +541,13 @@ describe("evidence-preserving reducer", () => {
 			),
 		).toBeUndefined();
 		expect(calls).toBe(0);
+		expect(manager.customEntryData()).toEqual([
+			expect.objectContaining({
+				kind: "fallback",
+				reason: "source-under-min-bytes",
+				bytes: Buffer.byteLength(shortBody, "utf8"),
+				minBytes: 4_096,
+			}),
+		]);
 	});
 });
