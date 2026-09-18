@@ -135,6 +135,7 @@ export function createObservationPackExtension(): ExtensionFactory {
 		});
 
 		pi.on("context", async (event, ctx: ExtensionContext) => {
+			if (!pi.getActiveTools().includes("obs_recall")) return;
 			const projected = [...event.messages];
 			const root = runtimeRoot(ctx);
 			// How many provider requests each message has already been part of,

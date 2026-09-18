@@ -131,6 +131,10 @@ export class FakePi {
 		this.registeredTools.push(tool);
 	}
 
+	getActiveTools(): string[] {
+		return this.registeredTools.map((tool) => tool.name);
+	}
+
 	appendEntry(customType: string, data?: unknown): void {
 		this.sessionManager.appendCustomEntry(customType, data);
 	}
