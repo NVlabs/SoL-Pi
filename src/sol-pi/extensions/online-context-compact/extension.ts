@@ -179,7 +179,6 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 		let activeDebt: CacheDebt | undefined;
 		let nextContinuation: PendingContinuation | undefined;
 		let compactionInFlight = false;
-		let pendingMemoTokens = 0;
 
 		const releaseContinuation = (): void => {
 			const continuation = nextContinuation;
@@ -202,7 +201,6 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 			selected = undefined;
 			activeDebt = undefined;
 			compactionInFlight = false;
-			pendingMemoTokens = 0;
 		};
 		const ensureRestored = (context: ExtensionContext): void => {
 			if (!restored) restore(context);
@@ -374,10 +372,10 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 						onComplete: (compaction) => {
 							try {
 								compacted = true;
-								pendingMemoTokens = tokenEstimate(compaction.summary);
+								const memoTokens = tokenEstimate(compaction.summary);
 								const removed = Math.max(
 									0,
-									pending.decision.archiveTokens - pendingMemoTokens,
+									pending.decision.archiveTokens - memoTokens,
 								);
 								if (removed > 0) {
 									showSolPiSavings(
@@ -445,8 +443,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 		pi.on("session_compact", (event, context) => {
 			ensureRestored(context);
 			const summary = compactionSummary(event);
-			const memoTokens = pendingMemoTokens > 0 ? pendingMemoTokens : summary ? tokenEstimate(summary) : undefined;
-			pendingMemoTokens = 0;
+			const memoTokens = summary ? tokenEstimate(summary) : undefined;
 			state = recordCompaction(state, {
 				...(event.fromExtension || !activeDebt ? { debtTokens: 0, repaymentTokens: 0 } : activeDebt),
 				memoTokens,
@@ -467,7 +464,6 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 			selected = undefined;
 			activeDebt = undefined;
 			compactionInFlight = false;
-			pendingMemoTokens = 0;
 		});
 	};
 }
