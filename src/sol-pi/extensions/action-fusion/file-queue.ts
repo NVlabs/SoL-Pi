@@ -15,6 +15,11 @@ function stripToolPathPrefix(filePath: string): string {
 }
 
 export function resolveToolPath(cwd: string, filePath: string): string {
+	if (typeof filePath !== "string" || filePath.length === 0) {
+		// Validation upstream does not guarantee `path` on every host shim; fail
+		// with a tool-visible error instead of a TypeError deep in string handling.
+		throw new Error("write/edit tool input is invalid. `path` must be the target file path.");
+	}
 	const stripped = stripToolPathPrefix(filePath);
 	// Pi accepts file URLs; the queue and hash guard must use the same target.
 	const expanded = stripped.startsWith("file://") ? fileURLToPath(stripped) : stripped;
