@@ -19,7 +19,7 @@
 
 **Spend less without making the agent do less useful work.**
 
-SoL-Pi is a standalone extension for Pi that packages four reusable efficiency mechanisms discovered through scaled auto-research loops. It reduces repeated model turns, context replay, oversized observations, and unnecessary long-log reading while preserving the work and evidence an agent needs to finish a task.
+SoL-Pi is a standalone extension for Pi that packages four reusable efficiency mechanisms discovered through scaled auto-research loops plus an optional trajectory inspector. It reduces repeated model turns, context replay, oversized observations, and unnecessary long-log reading while preserving the work and evidence an agent needs to finish a task.
 
 SoL-Pi installs on top of an unmodified Pi release. Every mechanism is opt-in and disabled by default.
 
@@ -39,6 +39,7 @@ The standalone release contains four mechanisms that survived that process. They
 | Observations | **ObservationPack** | Repeated large text results become stable handles with exact paged recall. |
 | Delegation | **Evidence-Preserving Reducer** | Long diagnostic logs become compact receipts only when every retained quotation matches the archived source. |
 | Context | **Online Context Compact** | Completed plan steps become candidate points for Pi's native compaction, subject to economic and window-pressure checks; after a successful compaction, Pi continues the task in a new turn. |
+| Observability | **Trajectory Inspector** | A live, metadata-only view of recent turns, model requests, tools, results, and compactions. |
 
 The mechanisms share four rules:
 
@@ -92,7 +93,7 @@ SoL-Pi uses a single effective configuration. With the official Pi distribution,
 
 If neither file exists, SoL-Pi uses its built-in defaults. The project-level configuration takes precedence over the user-level configuration; the two files are not merged.
 
-The following conservative configuration enables only the two local mechanisms that make no additional model calls and do not stop an active run:
+The following conservative configuration enables the two local mechanisms and the optional local trajectory view; none makes additional model calls or stops an active run:
 
 ```json
 {
@@ -101,6 +102,7 @@ The following conservative configuration enables only the two local mechanisms t
   "observationPack": true,
   "evidencePreservingReducer": false,
   "onlineContextCompact": false,
+  "trajectoryInspector": true,
   "cacheWriteReadRatio": 12.5
 }
 ```
@@ -121,9 +123,13 @@ ObservationPack and Evidence-Preserving Reducer store session-specific archives 
 
 They archive eligible source material in this directory. The archived copies remain local and are not automatically deleted when the Pi session ends.
 
+`obs_recall` pages an archive when called with `id` and `offset`. Supplying a non-empty, well-formed Unicode `query` (at most 256 UTF-8 bytes) performs a case-sensitive literal byte search instead. Search results provide byte spans, LF-based line numbers, and UTF-8-safe bounded context. Use the returned `next_offset` to continue; results are capped at 20 matches and the normal 16 KiB/400-line tool-result limit, so a capped final page can require one empty continuation to confirm `eof`. Search rescans the archive prefix to recover a line number and deliberately keeps no persistent index.
+
 Online Context Compact stores its state in Pi's session log. After a successful compaction, it starts a new turn and automatically continues the active task. Cancelling the run or exiting Pi does not trigger automatic continuation.
 
 Evidence-Preserving Reducer may send eligible diagnostic-log content to its configured reducer model using Pi-managed authentication. Review [SECURITY.md](SECURITY.md) before enabling it. Do not enable remote reduction for logs that must remain local.
+
+Trajectory Inspector is local observability. When enabled, it keeps a bounded live widget in TUI mode and writes metadata-only records to the session-derived `trajectory-inspector/events.jsonl` file. It records event kinds, timestamps, statuses, model/tool names, byte counts, and correlation ids; it does not store prompts, assistant text, tool arguments, or tool output. Use `/trajectory` to show or hide the widget. The view does not alter model context or agent decisions.
 
 ## Documentation
 
@@ -143,6 +149,7 @@ npm ci --ignore-scripts
 npm run check
 npm audit --audit-level=high
 node scripts/check-pi-compat.mjs
+node --experimental-strip-types scripts/compare-observation-search.mjs --out /absolute/path/observation-search.json
 ```
 
 `npm run check` covers TypeScript, the complete test suite, and package inspection. The development dependency set is pinned to Pi 0.85.1; runtime Pi packages remain peer dependencies so Pi owns their installation and upgrades.
