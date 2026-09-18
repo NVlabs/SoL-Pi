@@ -4,7 +4,6 @@
  */
 import type { ArchiveObject } from "./archive.ts";
 import {
-	FAILURE_SIGNAL,
 	isRecord,
 	MAX_EVIDENCE_ITEMS,
 	MAX_QUOTE_CHARS,
@@ -44,7 +43,10 @@ export function reducerInstructions(): string {
 		"evidence must contain only exact, contiguous quotes copied byte-for-byte from the supplied log.",
 		"Allowed evidence kinds: fatal, failure, warning, target, summary.",
 		`Return at most ${MAX_EVIDENCE_ITEMS} evidence items and keep each quote at most ${MAX_QUOTE_CHARS} characters.`,
-		"Prefer the first causal-looking fatal/failure signal, unique fatal signatures, failing targets, and useful warnings.",
+		"When is_error=true, retain every distinct nonblank source line, regardless of its apparent meaning or evidence kind. Keep each line complete, including indentation.",
+		"Identical repeated lines may be represented once. Do not omit unfamiliar diagnostics, negated statements, progress messages or other nonblank lines from a failing log.",
+		"When is_error=true, return empty evidence and uncertain=true if the log is ambiguous or its required lines cannot fit the evidence limits. Uncertain failure receipts are rejected.",
+		"Use remaining evidence space for failing targets and useful warnings.",
 		"Do not diagnose a fix, recommend an edit, invent a command, or claim that an omitted failure is absent.",
 		"Set uncertain=true when the log is ambiguous or lacks a clear failure signal.",
 		'Required shape: {"schema":string,"source_sha256":string,"status":"success"|"failure","uncertain":boolean,"evidence":[{"kind":"fatal"|"failure"|"warning"|"target"|"summary","quote":string}]}',
@@ -131,14 +133,17 @@ export function validateReceipt(
 			quoteSha256: sha256(quote),
 		});
 	}
-	// A failing log that reads as a failure must carry failure evidence, or the
-	// receipt would let a real failure through as a clean summary.
-	if (
-		isError &&
-		FAILURE_SIGNAL.test(body) &&
-		!evidence.some((item) => item.kind === "fatal" || item.kind === "failure")
-	) {
-		return { ok: false, reason: "missing-failure-evidence" };
+	// On failure, do not guess which lines explain the observed exit. Preserve
+	// every distinct nonblank line so even unrecognized diagnostics survive.
+	// This permits repeated-line deduplication, not semantic log summarization.
+	if (isError) {
+		if (parsed.uncertain) return { ok: false, reason: "uncertain-failure-evidence" };
+		const sourceLines = new Set(body.split(/\r?\n/u).filter((line) => line.trim().length > 0));
+		const quotedLines = new Set(evidence.flatMap((item) => item.quote.split(/\r?\n/u)));
+		if (sourceLines.size === 0) return { ok: false, reason: "missing-failure-evidence" };
+		for (const line of sourceLines) {
+			if (!quotedLines.has(line)) return { ok: false, reason: "missing-failure-evidence" };
+		}
 	}
 	return { ok: true, value: { status: expectedStatus, uncertain: parsed.uncertain, evidence } };
 }
