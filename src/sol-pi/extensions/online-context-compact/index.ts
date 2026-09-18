@@ -8,6 +8,7 @@ import { createOnlineContextCompactExtension } from "./extension.ts";
 
 export {
 	DEFAULT_COMPACTION_ECONOMICS,
+	DEFAULT_SUBSEQUENT_COMPACTION_COOLDOWN_REQUESTS,
 	decideCompaction,
 	estimateRemainingRequests,
 	type CompactionDecision,
@@ -33,6 +34,7 @@ export {
 export {
 	initialOnlineState,
 	ONLINE_STATE_ENTRY,
+	recordCompletedPlanHandoff,
 	restoreOnlineState,
 	type OnlineState,
 	type ProgressSummary,
