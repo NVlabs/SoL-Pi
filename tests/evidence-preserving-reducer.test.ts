@@ -225,6 +225,123 @@ describe("evidence-preserving reducer", () => {
 		expect(DIAGNOSTIC_COMMAND.test("rg test src")).toBe(false);
 	});
 
+	it("admits only the diagnostic cargo subcommands", () => {
+		for (const command of [
+			"cargo build",
+			"cargo test",
+			"cargo check",
+			"cargo build --release",
+			"cargo +nightly test",
+			"cd repo && cargo build",
+		]) {
+			expect([command, DIAGNOSTIC_COMMAND.test(command)]).toEqual([command, true]);
+		}
+		for (const command of [
+			"cargo",
+			"cargo fmt",
+			"cargo clippy",
+			"cargo run",
+			"cargo publish",
+			"cargo login",
+			"cargo install cargo-nextest",
+			"cargo login cargo test",
+			"cargo install cargo test",
+			"cargo publish --package cargo test",
+			"cargo --color test",
+			"cargo --color= test",
+			"cargo --color sometimes test",
+			"cargo --color=sometimes test",
+			"cargo --config test",
+			"cargo --config= test",
+			"echo cargo test",
+		]) {
+			expect([command, DIAGNOSTIC_COMMAND.test(command)]).toEqual([command, false]);
+		}
+	});
+
+	it.each([
+		"cargo publish",
+		"cargo login # pytest -q",
+		"echo '# pytest -q'",
+		String.raw`cargo "\test"`,
+	])("leaves a non-diagnostic result untouched: %s", async (command) => {
+		const root = await storeRoot();
+		const body = `Updating crates.io index\n${"compiling dependency\n".repeat(400)}`;
+		const complete = vi.fn();
+		const { context, manager, pi } = load(root, complete as unknown as Complete);
+
+		const event = bashEvent(body, { input: { command }, isError: false });
+		const result = await pi.emit("tool_result", event, context);
+
+		expect(result).toBeUndefined();
+		expect(complete).not.toHaveBeenCalled();
+		expect(manager.customEntryData()).toHaveLength(0);
+	});
+
+	it("admits Cargo global options before the diagnostic subcommand", () => {
+		for (const command of [
+			"cargo --locked test",
+			"cargo --color always check",
+			"cargo --color=always check",
+			"cargo +nightly --offline build",
+			"cargo --config net.offline=true test",
+			"cargo --config=net.offline=true test",
+			"cargo -vv -Z unstable-options -C repo check",
+			"CARGO_TERM_COLOR=always cargo --frozen test",
+			"cargo login; cargo test",
+		]) {
+			expect([command, DIAGNOSTIC_COMMAND.test(command)]).toEqual([command, true]);
+		}
+	});
+
+	it("checks adversarial Cargo option input within a bounded time", () => {
+		const command = `cargo ${"--color ".repeat(35)}publish`;
+		const startedAt = performance.now();
+
+		expect(DIAGNOSTIC_COMMAND.test(command)).toBe(false);
+		expect(performance.now() - startedAt).toBeLessThan(250);
+	});
+
+	it("preserves quoted empty Cargo option values and shell comments", () => {
+		expect(DIAGNOSTIC_COMMAND.test("cargo test # cargo publish")).toBe(true);
+		for (const command of [
+			"cargo -C '' publish test",
+			"cargo --config '' login test",
+			"cargo -Z '' login test",
+			"cargo login # ; cargo test",
+		]) {
+			expect([command, DIAGNOSTIC_COMMAND.test(command)]).toEqual([command, false]);
+		}
+	});
+
+	it.each([
+		"cargo login # pytest -q",
+		"echo '# pytest -q'",
+		"echo pytest -q",
+		"cargo login pytest -q",
+		'"python -m pytest"',
+		'npm "test extra"',
+		'npm "test\0extra"',
+		String.raw`cargo "\test"`,
+		String.raw`cargo "\\test"`,
+	])("rejects diagnostic names in shell data: %s", (command) => {
+		expect(DIAGNOSTIC_COMMAND.test(command)).toBe(false);
+	});
+
+	it("recognizes diagnostic tokens after shell parsing", () => {
+		for (const command of [
+			"cd repo && pytest -q",
+			"MODE=test python3 -m pytest",
+			"echo '# ignored'; npm test",
+			"cargo login # ignored\npytest -q",
+			'cargo "te"st',
+			'cargo "te\\\nst"',
+			"cargo te\\\nst",
+		]) {
+			expect([command, DIAGNOSTIC_COMMAND.test(command)]).toEqual([command, true]);
+		}
+	});
+
 	it("loads a configured reducer provider/model route", async () => {
 		const root = await storeRoot();
 		const config = loadReducerConfig(root, {
