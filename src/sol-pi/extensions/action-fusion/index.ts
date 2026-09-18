@@ -66,6 +66,36 @@ function memoizeByCwd<T>(create: (cwd: string) => T): (cwd: string) => T {
 	};
 }
 
+/**
+ * The built-in tool's own parameter properties, which the fused tool re-declares
+ * alongside `then_run`.
+ *
+ * Pi publishes them as a TypeBox `Type.Object`; compatible hosts may expose
+ * either a plain JSON Schema object or a callable `toJsonSchema()` value.
+ * Preserve JSON Schema's `required` list when rebuilding optional properties.
+ * Invalid or throwing host introspection must leave the built-in tool intact.
+ */
+export function hostToolProperties(parameters: unknown): Record<string, unknown> {
+	try {
+		if (!parameters || (typeof parameters !== "object" && typeof parameters !== "function")) return {};
+		let json = parameters as { properties?: unknown; required?: unknown; toJsonSchema?: () => unknown };
+		if ((!json.properties || (typeof json.properties === "object" && Object.keys(json.properties).length === 0)) && typeof json.toJsonSchema === "function") {
+			json = json.toJsonSchema() as typeof json;
+		}
+		if (!json || typeof json !== "object" || !json.properties || typeof json.properties !== "object" || Array.isArray(json.properties)) return {};
+		if (json.required !== undefined && (!Array.isArray(json.required) || !json.required.every((key: unknown) => typeof key === "string"))) return {};
+		const required = new Set(json.required as string[] | undefined);
+		const entries = Object.entries(json.properties);
+		if (entries.some(([, schema]) => !schema || typeof schema !== "object" || Array.isArray(schema))) return {};
+		return Object.fromEntries(entries.map(([key, schema]) => [
+			key,
+			required.has(key) ? schema : Type.Optional(schema as never),
+		]));
+	} catch {
+		return {};
+	}
+}
+
 export function createActionFusionExtension(options: ActionFusionOptions = {}): ExtensionFactory {
 	const baseEdit = memoizeByCwd((cwd: string) => createEditToolDefinition(cwd, options.editOptions));
 	const baseWrite = memoizeByCwd((cwd: string) => createWriteToolDefinition(cwd, options.writeOptions));
@@ -74,48 +104,69 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 		const editTemplate = baseEdit(process.cwd());
 		const writeTemplate = baseWrite(process.cwd());
 
+		// Unchecked cast: on a TypeBox host these are exactly the built-in tool's
+		// own properties; on a reduced host they are rebuilt from the same schema,
+		// so the fused tool keeps the built-in argument contract either way.
+		const editProperties = hostToolProperties(
+			editTemplate.parameters,
+		) as typeof editTemplate.parameters.properties;
+		const writeProperties = hostToolProperties(
+			writeTemplate.parameters,
+		) as typeof writeTemplate.parameters.properties;
+
 		const editParameters = Type.Object({
-			...editTemplate.parameters.properties,
+			...editProperties,
 			then_run: createThenRunSchema(EDIT_THEN_RUN_DESCRIPTION),
 		});
 		const writeParameters = Type.Object({
-			...writeTemplate.parameters.properties,
+			...writeProperties,
 			then_run: createThenRunSchema(WRITE_THEN_RUN_DESCRIPTION),
 		});
 
-		pi.registerTool<typeof editParameters, EditToolDetails | undefined>({
-			...editTemplate,
-			parameters: editParameters,
-			async execute(toolCallId, input, signal, onUpdate, ctx) {
-				const { then_run, ...editInput } = input as typeof input & { then_run?: ThenRunInput };
-				const result = await executeMutationThenRun({
-					toolCallId,
-					absolutePath: resolveToolPath(ctx.cwd, input.path),
-					thenRun: then_run,
-					bashOptions: options.bashOptions,
-					signal,
-					ctx,
-					mutate: () => baseEdit(ctx.cwd).execute(toolCallId, editInput, signal, onUpdate, ctx),
-				});
-				if (
-					then_run &&
-					result.content.some((block) => block.type === "text" && block.text.includes(THEN_RUN_SUCCEEDED))
-				) {
-					showSolPiSavings(ctx, "Action Fusion", "1 model round-trip avoided");
-				}
-				return result;
-			},
-			renderCall: (args, theme, context) => {
-				const base = baseEdit(context.cwd).renderCall!(args, theme, context);
-				return args.then_run ? renderSolPiTool(theme, "Action Fusion", "1 model round-trip avoided", base) : base;
-			},
-			renderResult: (result, resultOptions, theme, context) => {
-				const base = baseEdit(context.cwd).renderResult!(result, resultOptions, theme, context);
-				return context.args.then_run
-					? renderSolPiTool(theme, "Action Fusion", "1 model round-trip avoided", base)
-					: base;
-			},
-		});
+		// The fused queue and the pre-command hash check are keyed on one target
+		// file, so only replace a mutation tool that names its target with `path`.
+		// A host whose edit tool takes a different shape (a multi-file patch, say)
+		// keeps its built-in tool rather than getting a fused one that cannot
+		// resolve a target.
+		if ("path" in editProperties) {
+			pi.registerTool<typeof editParameters, EditToolDetails | undefined>({
+				...editTemplate,
+				parameters: editParameters,
+				async execute(toolCallId, input, signal, onUpdate, ctx) {
+					const { then_run, ...editInput } = input as typeof input & { then_run?: ThenRunInput };
+					const result = await executeMutationThenRun({
+						toolCallId,
+						absolutePath: resolveToolPath(ctx.cwd, input.path),
+						thenRun: then_run,
+						bashOptions: options.bashOptions,
+						signal,
+						ctx,
+						mutate: () => baseEdit(ctx.cwd).execute(toolCallId, editInput, signal, onUpdate, ctx),
+					});
+					if (
+						then_run &&
+						result.content.some((block) => block.type === "text" && block.text.includes(THEN_RUN_SUCCEEDED))
+					) {
+						showSolPiSavings(ctx, "Action Fusion", "1 model round-trip avoided");
+					}
+					return result;
+				},
+				renderCall: (args, theme, context) => {
+					const base = baseEdit(context.cwd).renderCall!(args, theme, context);
+					return args.then_run
+						? renderSolPiTool(theme, "Action Fusion", "1 model round-trip avoided", base)
+						: base;
+				},
+				renderResult: (result, resultOptions, theme, context) => {
+					const base = baseEdit(context.cwd).renderResult!(result, resultOptions, theme, context);
+					return context.args.then_run
+						? renderSolPiTool(theme, "Action Fusion", "1 model round-trip avoided", base)
+						: base;
+				},
+			});
+		}
+
+		if (!("path" in writeProperties)) return;
 
 		pi.registerTool<typeof writeParameters, undefined>({
 			...writeTemplate,
