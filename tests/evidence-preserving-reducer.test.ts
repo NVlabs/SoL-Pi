@@ -14,9 +14,12 @@ import {
 	createEvidencePreservingReducerExtension,
 	DIAGNOSTIC_COMMAND,
 	loadReducerConfig,
+	reduceToolResult,
 	REDUCER_RECEIPT_SCHEMA,
 } from "../src/sol-pi/extensions/evidence-preserving-reducer/index.ts";
 import { archiveBody } from "../src/sol-pi/extensions/evidence-preserving-reducer/archive.ts";
+import { ReceiptCache } from "../src/sol-pi/extensions/evidence-preserving-reducer/cache.ts";
+import * as receiptModule from "../src/sol-pi/extensions/evidence-preserving-reducer/receipt.ts";
 import {
 	callReducer,
 	type CompatComplete,
@@ -181,6 +184,176 @@ function load(
 }
 
 describe("evidence-preserving reducer", () => {
+	describe("verified receipt reuse", () => {
+		const signal = "ERROR test target failed";
+		const body = `${signal}\n${"diagnostic output\n".repeat(400)}`;
+		const validReceipt = (input: string): ModelReceipt => ({
+			schema: REDUCER_RECEIPT_SCHEMA,
+			source_sha256: sourceHash(input),
+			status: input.includes("is_error=true") ? "failure" : "success",
+			uncertain: false,
+			evidence: [{ kind: "failure", quote: signal }],
+		});
+
+		it("reduces three identical logs once and charges no model usage for cache hits", async () => {
+			const complete = vi.fn(modelComplete(body, validReceipt));
+			const { context, manager, pi } = load(await storeRoot(), complete);
+			// Control: the same reduction path without a cache makes three calls.
+			const config = loadReducerConfig(runtimeRoot(context));
+			for (let index = 0; index < 3; index++) {
+				await reduceToolResult(() => {}, config, bashEvent(body), context);
+			}
+			expect(complete).toHaveBeenCalledTimes(3);
+			complete.mockClear();
+			for (let index = 0; index < 3; index++) {
+				const result = await pi.emit("tool_result", bashEvent(body, { toolCallId: `call-${index}` }), context) as {
+					content: { text: string }[];
+				};
+				expect(result.content[0]?.text).toContain(`quote=${JSON.stringify(signal)}`);
+				if (index > 0) expect(result.content[0]?.text).toContain("reducer_total_tokens=0");
+			}
+			expect(complete).toHaveBeenCalledTimes(1);
+			const events = manager.customEntryData();
+			expect(events.filter((entry) => entry.kind === "provider_response")).toHaveLength(1);
+			expect(events.filter((entry) => entry.kind === "cache_hit")).toHaveLength(2);
+			const applied = events.filter((entry) => entry.kind === "applied");
+			expect(applied.map((entry) => entry.cacheHit)).toEqual([false, true, true]);
+			for (const entry of applied.slice(1)) {
+				expect(entry.usage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 });
+			}
+		});
+
+		it("invalidates cached evidence when reducer instructions change", async () => {
+			const complete = vi.fn(modelComplete(body, validReceipt));
+			const { context, pi } = load(await storeRoot(), complete);
+			await pi.emit("tool_result", bashEvent(body), context);
+			const original = receiptModule.reducerInstructions();
+			const instructions = vi.spyOn(receiptModule, "reducerInstructions").mockReturnValue(`${original}\nUpdated rules`);
+			try {
+				await pi.emit("tool_result", bashEvent(body), context);
+				expect(complete).toHaveBeenCalledTimes(2);
+			} finally {
+				instructions.mockRestore();
+			}
+		});
+
+		it("does not cache a verified receipt that is larger than the source", async () => {
+			const lines = Array.from({ length: 12 }, (_, index) => `ERROR ${index}: ${"x".repeat(400)}`);
+			const largeBody = lines.join("\n");
+			const complete = vi.fn(modelComplete(largeBody, (input) => ({
+				...validReceipt(input), evidence: lines.map((quote) => ({ kind: "failure", quote })),
+			})));
+			const { context, manager, pi } = load(await storeRoot(), complete);
+			expect(await pi.emit("tool_result", bashEvent(largeBody), context)).toBeUndefined();
+			expect(await pi.emit("tool_result", bashEvent(largeBody), context)).toBeUndefined();
+			expect(complete).toHaveBeenCalledTimes(2);
+			expect(manager.customEntryData().filter((entry) => entry.reason === "receipt-not-smaller")).toHaveLength(2);
+		});
+
+		it.each(["body", "command", "status", "provider", "model", "output-limit"])(
+			"makes a new request when %s changes",
+			async (field) => {
+				const complete = vi.fn(modelComplete(body, validReceipt));
+				const root = await storeRoot();
+				const { context } = load(root, complete, ACTIVE_MODEL, {
+					modelRegistry: {
+						find: (provider: string, id: string) => ({ ...REDUCER_MODEL, provider, id }),
+						complete,
+					} as unknown as ExtensionContext["modelRegistry"],
+				});
+				const config = loadReducerConfig(root);
+				const cache = new ReceiptCache();
+				const changedConfig = {
+					...config,
+					...(field === "provider" ? { reducerProvider: "another-provider" } : {}),
+					...(field === "model" ? { reducerModel: "another-model" } : {}),
+					...(field === "output-limit" ? { maxOutputTokens: 1024 } : {}),
+				};
+				const changedEvent = bashEvent(field === "body" ? `${body}\nnew output` : body, {
+					...(field === "command" ? { input: { command: "pytest -x" } } : {}),
+					...(field === "status" ? { isError: false } : {}),
+				});
+				expect(await reduceToolResult(() => {}, config, bashEvent(body), context, cache)).toBeDefined();
+				expect(await reduceToolResult(() => {}, changedConfig, changedEvent, context, cache)).toBeDefined();
+				expect(complete).toHaveBeenCalledTimes(2);
+			},
+		);
+
+		it("keeps caches isolated by session and extension instance", async () => {
+			const complete = vi.fn(modelComplete(body, validReceipt));
+			const root = await storeRoot();
+			const first = load(root, complete);
+			await first.pi.emit("tool_result", bashEvent(body), first.context);
+			const otherSession = load(await storeRoot(), complete);
+			await first.pi.emit("tool_result", bashEvent(body), otherSession.context);
+			const restarted = load(root, complete);
+			await restarted.pi.emit("tool_result", bashEvent(body), restarted.context);
+			expect(complete).toHaveBeenCalledTimes(3);
+		});
+
+		it("does not cache invalid evidence and retries the next occurrence", async () => {
+			const complete = vi.fn(modelComplete(body, validReceipt));
+			complete.mockImplementationOnce(modelComplete(body, (input) => ({
+				...validReceipt(input), evidence: [{ kind: "failure", quote: "invented evidence" }],
+			})));
+			const { context, pi } = load(await storeRoot(), complete);
+			expect(await pi.emit("tool_result", bashEvent(body), context)).toBeUndefined();
+			expect(await pi.emit("tool_result", bashEvent(body), context)).toBeDefined();
+			expect(await pi.emit("tool_result", bashEvent(body), context)).toBeDefined();
+			expect(complete).toHaveBeenCalledTimes(2);
+		});
+
+		it("does not cache provider errors", async () => {
+			const complete = vi.fn(modelComplete(body, validReceipt));
+			complete.mockRejectedValueOnce(new Error("provider unavailable"));
+			const { context, pi } = load(await storeRoot(), complete);
+			expect(await pi.emit("tool_result", bashEvent(body), context)).toBeUndefined();
+			expect(await pi.emit("tool_result", bashEvent(body), context)).toBeDefined();
+			expect(complete).toHaveBeenCalledTimes(2);
+		});
+
+		it("rechecks the archive before reusing a receipt", async () => {
+			const complete = vi.fn(modelComplete(body, validReceipt));
+			const { context, manager, pi } = load(await storeRoot(), complete);
+			await pi.emit("tool_result", bashEvent(body), context);
+			const candidate = manager.customEntryData().find((entry) => entry.kind === "candidate");
+			await writeFile(String(candidate?.sourcePath), "corrupted archive");
+			await expect(pi.emit("tool_result", bashEvent(body), context)).rejects.toThrow("integrity failure");
+			expect(complete).toHaveBeenCalledTimes(1);
+		});
+
+		it("reuses evidence while preserving the current fused write result", async () => {
+			const complete = vi.fn(modelComplete(body, validReceipt));
+			const { context, pi } = load(await storeRoot(), complete);
+			await pi.emit("tool_result", fusedEvent(body, false), context);
+			const next = fusedEvent(body, false);
+			next.content[0] = { type: "text", text: "Successfully wrote another file" };
+			next.details = { patch: "new patch" };
+			const result = await pi.emit("tool_result", next, context) as {
+				content: { text: string }[]; details: Record<string, unknown>;
+			};
+			expect(result.content[0]?.text).toBe("Successfully wrote another file");
+			expect(result.content[1]?.text).toContain("reducer_total_tokens=0");
+			expect(result.details.patch).toBe("new patch");
+			expect(complete).toHaveBeenCalledTimes(1);
+		});
+
+		it("evicts the least recently used receipt at the session capacity", async () => {
+			const complete = vi.fn(modelComplete(body, validReceipt));
+			const { context, pi } = load(await storeRoot(), complete);
+			for (let index = 0; index < 64; index++) {
+				await pi.emit("tool_result", bashEvent(`${body}\n${index}`), context);
+			}
+			await pi.emit("tool_result", bashEvent(`${body}\n0`), context);
+			expect(complete).toHaveBeenCalledTimes(64);
+			await pi.emit("tool_result", bashEvent(`${body}\n64`), context);
+			await pi.emit("tool_result", bashEvent(`${body}\n0`), context);
+			expect(complete).toHaveBeenCalledTimes(65);
+			await pi.emit("tool_result", bashEvent(`${body}\n1`), context);
+			expect(complete).toHaveBeenCalledTimes(66);
+		});
+	});
+
 	it("registers without an extension-specific credential", () => {
 		const pi = new FakePi();
 		expect(() => createEvidencePreservingReducerExtension()(pi.asExtensionApi())).not.toThrow();
