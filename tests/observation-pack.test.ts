@@ -98,6 +98,30 @@ describe("observation pack", () => {
 		expect(pi.registeredTools.map((tool) => tool.name)).toEqual(["obs_recall"]);
 	});
 
+	it("fails open on an in-memory session without a persistent directory", async () => {
+		const pi = observationPackPi();
+		const message = toolResult(repeatPastThreshold("observation bytes\n"));
+		const inMemory = new FakeSessionManager([], "session-a", "");
+		const projected = await pi.emitContext([message], fakeContext(inMemory));
+		expect(projected).toEqual([message]);
+	});
+
+	it("reports an unknown observation id when recalling from an in-memory session", async () => {
+		const pi = observationPackPi();
+		const inMemory = new FakeSessionManager([], "session-a", "");
+		await expect(
+			pi
+				.tool("obs_recall")
+				.execute(
+					"recall-1",
+					{ id: "obs_0123456789abcdef01234567" },
+					undefined,
+					undefined,
+					fakeContext(inMemory),
+				),
+		).rejects.toThrow("Unknown observation id");
+	});
+
 	it("renders observation recall as an English lightning savings call", () => {
 		const recall = observationPackPi().tool("obs_recall");
 		const args = { id: "obs_0123456789abcdef01234567", offset: 0 };
