@@ -89,7 +89,7 @@ describe("Online Context Compact extension", () => {
 		expect(await pi.emitContext(messages, context)).toEqual(messages);
 	});
 
-	it("stops at an eligible completed-step boundary, then compacts after settlement", async () => {
+	it("stops at eligible boundaries and records each completed compaction summary", async () => {
 		const manager = new FakeSessionManager();
 		manager.appendMessage({ role: "user", content: `old ${"x".repeat(2_000)}`, timestamp: Date.now() });
 		manager.appendMessage(assistant(`work ${"y".repeat(2_000)}`));
@@ -103,12 +103,15 @@ describe("Online Context Compact extension", () => {
 		});
 		const abort = vi.fn();
 		const compactCalls: CompactOptions[] = [];
+		const summaries = ["summary", "a substantially longer second summary"] as const;
 		let finishCompaction!: () => void;
 		const compactionGate = new Promise<void>((resolve) => {
 			finishCompaction = resolve;
 		});
 		let context: ExtensionContext;
 		const compact = (options: CompactOptions = {}): void => {
+			const summary = summaries[compactCalls.length];
+			if (!summary) throw new Error("Unexpected extra compaction");
 			compactCalls.push(options);
 			void compactionGate.then(() => pi
 				.emit(
@@ -120,10 +123,10 @@ describe("Online Context Compact extension", () => {
 						willRetry: false,
 						compactionEntry: {
 							type: "compaction",
-							id: "compact-1",
+							id: `compact-${compactCalls.length}`,
 							parentId: manager.getLeafId(),
 							timestamp: new Date().toISOString(),
-							summary: "summary",
+							summary,
 							firstKeptEntryId: manager.entries.at(-1)?.id ?? "message-1",
 							tokensBefore: 195_000,
 						},
@@ -131,7 +134,7 @@ describe("Online Context Compact extension", () => {
 					context,
 				))
 				.then(() => options.onComplete?.({
-					summary: "summary",
+					summary,
 					firstKeptEntryId: manager.entries.at(-1)?.id ?? "message-1",
 					tokensBefore: 195_000,
 				}));
@@ -207,7 +210,77 @@ describe("Online Context Compact extension", () => {
 		await firstSettlement;
 		expect(firstSettlementFinished).toBe(true);
 		expect(await pi.emit("session_before_tree", { type: "session_before_tree" }, context)).toBeUndefined();
-		expect(restoreOnlineState(manager.entries)).toMatchObject({ nativeCompactionCount: 1, pendingProgress: [] });
+		expect(restoreOnlineState(manager.entries)).toMatchObject({
+			nativeCompactionCount: 1,
+			pendingProgress: [],
+			completedBoundaryRequestCounts: [],
+			lastMemoTokens: Math.ceil(Buffer.byteLength(summaries[0]) / 4),
+		});
+
+		await pi.emit("before_provider_request", { type: "before_provider_request", payload: {} }, context);
+		await runPlan(pi, context, "second-plan-open", { steps: OPEN });
+		await runPlan(pi, context, "second-plan-done", { steps: DONE, progress: PROGRESS });
+		await pi.emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 2,
+				message: assistant("second boundary"),
+				toolResults: [
+					{
+						role: "toolResult",
+						toolCallId: "second-plan-done",
+						toolName: "update_plan",
+						content: [{ type: "text", text: "done" }],
+						isError: false,
+						timestamp: Date.now(),
+					},
+				],
+			},
+			context,
+		);
+
+		const secondSettlement = pi.emit("agent_settled", { type: "agent_settled" }, context);
+		await vi.waitFor(() => expect(compactCalls).toHaveLength(2));
+		await vi.waitFor(() => expect(pi.sentMessages).toHaveLength(2));
+		idle = true;
+		await pi.emit("agent_settled", { type: "agent_settled" }, context);
+		await secondSettlement;
+
+		expect(abort).toHaveBeenCalledTimes(2);
+		expect(restoreOnlineState(manager.entries)).toMatchObject({
+			nativeCompactionCount: 2,
+			pendingProgress: [],
+			completedBoundaryRequestCounts: [],
+			lastMemoTokens: Math.ceil(Buffer.byteLength(summaries[1]) / 4),
+		});
+	});
+
+	it("starts a new request horizon when the next user turn follows a completed plan", async () => {
+		const manager = new FakeSessionManager();
+		const pi = new FakePi(manager);
+		createOnlineContextCompactExtension({ cacheWriteReadRatio: null, keepRecentTokens: 50_000 })(pi.asExtensionApi());
+		const context = fakeContext(manager, { getSystemPrompt: () => "test prompt" });
+
+		await pi.emit("session_start", { type: "session_start" }, context);
+		await pi.emit("before_provider_request", { type: "before_provider_request", payload: {} }, context);
+		await runPlan(pi, context, "plan-open", { steps: OPEN });
+		await pi.emit("before_provider_request", { type: "before_provider_request", payload: {} }, context);
+		await runPlan(pi, context, "plan-done", { steps: DONE, progress: PROGRESS });
+
+		expect(restoreOnlineState(manager.entries).completedBoundaryRequestCounts).toEqual([2]);
+
+		await pi.emit(
+			"input",
+			{ type: "input", text: "start the follow-up task", streamingBehavior: "followUp" },
+			context,
+		);
+
+		expect(restoreOnlineState(manager.entries)).toMatchObject({
+			plan: [],
+			completedBoundaryRequestCounts: [],
+			nativeCompactionCount: 0,
+		});
 	});
 });
 
