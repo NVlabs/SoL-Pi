@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { type BashToolOptions, createBashToolDefinition, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { type BashToolOptions, createBashToolDefinition, type ExtensionContext, getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { withFusedFileQueue } from "./file-queue.ts";
 
@@ -32,6 +32,31 @@ export function createThenRunSchema(description: string) {
 
 function errorText(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Fill in a shell path from the session's settings when the caller did not
+ * supply one, so a bash installed outside Pi's default locations (and set via
+ * ``shellPath`` in settings.json) is honoured by the fused command. A caller
+ * provided ``shellPath`` wins; any settings lookup failure falls back to
+ * Pi's normal shell discovery.
+ */
+export function resolveShellPath(
+	ctx: ExtensionContext,
+	bashOptions: BashToolOptions | undefined,
+): BashToolOptions | undefined {
+	if (bashOptions?.shellPath) return bashOptions;
+	try {
+		const settings = SettingsManager.create(ctx.cwd, getAgentDir(), {
+			projectTrusted: ctx.isProjectTrusted(),
+		});
+		if (settings.drainErrors().length > 0) return bashOptions;
+		const shellPath = settings.getShellPath();
+		if (!shellPath) return bashOptions;
+		return { ...bashOptions, shellPath };
+	} catch {
+		return bashOptions;
+	}
 }
 
 function resultText(result: AgentToolResult<unknown>): string {
@@ -108,7 +133,7 @@ export async function executeMutationThenRun<TDetails>({
 		}
 
 		await assertUnchangedBeforeCommand(absolutePath);
-		const bash = createBashToolDefinition(ctx.cwd, bashOptions);
+		const bash = createBashToolDefinition(ctx.cwd, resolveShellPath(ctx, bashOptions));
 		try {
 			const bashResult = await bash.execute(`${toolCallId}:then_run`, thenRun, signal, undefined, ctx);
 			const output = resultText(bashResult);
