@@ -75,9 +75,15 @@ export function createObservationPackExtension(): ExtensionFactory {
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 				if (!isObservationId(params.id)) throw new Error(`Unknown observation id: ${params.id}`);
 				const offset = params.offset ?? 0;
+				let root: string;
+				try {
+					root = runtimeRoot(ctx);
+				} catch {
+					throw new Error(`Unknown observation id: ${params.id}`);
+				}
 				let chunk: RecallChunk;
 				try {
-					chunk = await readRecallChunk(observationPath(runtimeRoot(ctx), params.id), offset, RECALL_LIMITS);
+					chunk = await readRecallChunk(observationPath(root, params.id), offset, RECALL_LIMITS);
 				} catch (error) {
 					if (error instanceof Error && "code" in error && error.code === "ENOENT") {
 						throw new Error(`Unknown observation id: ${params.id}`);
@@ -135,8 +141,14 @@ export function createObservationPackExtension(): ExtensionFactory {
 		});
 
 		pi.on("context", async (event, ctx: ExtensionContext) => {
+			let root: string;
+			try {
+				root = runtimeRoot(ctx);
+			} catch {
+				// Fail open: in-memory or non-persisted sessions (e.g. subagents) bypass observation packing.
+				return { messages: event.messages };
+			}
 			const projected = [...event.messages];
-			const root = runtimeRoot(ctx);
 			// How many provider requests each message has already been part of,
 			// counted by the assistant messages that follow it.
 			const priorAssistantCounts = new Array<number>(event.messages.length);
