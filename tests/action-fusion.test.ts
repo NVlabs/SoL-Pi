@@ -118,6 +118,32 @@ describe("action fusion then_run", () => {
 		expect(edit.name).toBe("edit");
 	});
 
+	it("returns a clean validation error when write omits required content", async () => {
+		const { write } = loadFusedTools();
+		await expect(
+			write.execute(
+				"write-1",
+				{ path: join(tmpdir(), "out.txt") } as never,
+				undefined,
+				undefined,
+				createContext(process.cwd()),
+			),
+		).rejects.toThrow(/Validation failed for tool "write".*content/u);
+	});
+
+	it("returns a clean validation error when edit omits required edits", async () => {
+		const { edit } = loadFusedTools();
+		await expect(
+			edit.execute(
+				"edit-1",
+				{ path: join(tmpdir(), "out.txt") } as never,
+				undefined,
+				undefined,
+				createContext(process.cwd()),
+			),
+		).rejects.toThrow(/Validation failed for tool "edit".*edits/u);
+	});
+
 	it.each([
 		{ label: "default checkout name", cwd: join(tmpdir(), "SoL-Pi"), path: "target.ts" },
 		{ label: "unrelated checkout name", cwd: join(tmpdir(), "plain-checkout"), path: "target.ts" },
