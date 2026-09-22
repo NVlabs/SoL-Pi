@@ -7,11 +7,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BashOperations, ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
 	type ActionFusionOptions,
 	assertUnchangedBeforeCommand,
 	createActionFusionExtension,
 } from "../src/sol-pi/extensions/action-fusion/index.ts";
+import { resolveShellPath } from "../src/sol-pi/extensions/action-fusion/then-run.ts";
 import { withFusedFileQueue } from "../src/sol-pi/extensions/action-fusion/file-queue.ts";
 import { componentText, plainTheme } from "./helpers.ts";
 
@@ -82,6 +84,34 @@ afterEach(async () => {
 });
 
 describe("action fusion then_run", () => {
+	it("forwards a configured shellPath into the fused bash options", () => {
+		const ctx = createContext(process.cwd(), { isProjectTrusted: () => true });
+		vi.spyOn(SettingsManager, "create").mockReturnValue({
+			drainErrors: () => [],
+			getShellPath: () => "/custom/bash",
+		} as unknown as SettingsManager);
+
+		expect(resolveShellPath(ctx, undefined)).toEqual({ shellPath: "/custom/bash" });
+		expect(resolveShellPath(ctx, { shellPath: "/explicit" })).toEqual({ shellPath: "/explicit" });
+		const operations = {} as BashOperations;
+		expect(resolveShellPath(ctx, { operations })).toEqual({ operations, shellPath: "/custom/bash" });
+
+		vi.restoreAllMocks();
+	});
+
+	it("falls back to shell discovery when settings expose no shellPath", () => {
+		const ctx = createContext(process.cwd(), { isProjectTrusted: () => true });
+		vi.spyOn(SettingsManager, "create").mockReturnValue({
+			drainErrors: () => [],
+			getShellPath: () => undefined,
+		} as unknown as SettingsManager);
+
+		expect(resolveShellPath(ctx, undefined)).toBeUndefined();
+		const operations = {} as BashOperations;
+		expect(resolveShellPath(ctx, { operations })).toEqual({ operations });
+
+		vi.restoreAllMocks();
+	});
 	it("adds an optional command and timeout object to edit and write", () => {
 		const { edit, write } = loadFusedTools();
 
