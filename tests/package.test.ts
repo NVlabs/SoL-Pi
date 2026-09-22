@@ -12,7 +12,8 @@ interface PackReport {
 }
 
 function packedFiles(): string[] {
-	const result = spawnSync("npm", ["pack", "--dry-run", "--json"], {
+	const npmExecutable = process.platform === "win32" ? "npm.cmd" : "npm";
+	const result = spawnSync(npmExecutable, ["pack", "--dry-run", "--json"], {
 		cwd: process.cwd(),
 		encoding: "utf8",
 		timeout: 25_000,
