@@ -49,8 +49,10 @@ export function estimateTokens(text: string): number {
 export function countLines(text: string): number {
 	if (text.length === 0) return 0;
 	let lines = text.endsWith("\n") ? 0 : 1;
-	for (const character of text) {
-		if (character === "\n") lines += 1;
+	// Indexed, not `for..of`: this walks whole payloads on every projection, and
+	// the code-point iterator costs several times more for the same answer.
+	for (let index = 0; index < text.length; index += 1) {
+		if (text.charCodeAt(index) === 10) lines += 1;
 	}
 	return lines;
 }
@@ -77,8 +79,16 @@ function textFromResult(message: ToolResultMessage): string {
 	return (message.content as TextContent[]).map((block) => block.text).join("\n");
 }
 
+/** True when a whole line equals the receipt prefix, without splitting the payload. */
 function containsReducerReceipt(text: string): boolean {
-	return text.split("\n").some((line) => line === EVIDENCE_REDUCER_RECEIPT_PREFIX);
+	for (let index = text.indexOf(EVIDENCE_REDUCER_RECEIPT_PREFIX); index >= 0; ) {
+		const end = index + EVIDENCE_REDUCER_RECEIPT_PREFIX.length;
+		const startsLine = index === 0 || text.charCodeAt(index - 1) === 10;
+		const endsLine = end === text.length || text.charCodeAt(end) === 10;
+		if (startsLine && endsLine) return true;
+		index = text.indexOf(EVIDENCE_REDUCER_RECEIPT_PREFIX, index + 1);
+	}
+	return false;
 }
 
 /**
@@ -155,24 +165,39 @@ export async function ensureStored(observation: Observation): Promise<void> {
 	}
 }
 
+/**
+ * Whole lines from one end of the payload, within a byte budget.
+ *
+ * Walks line breaks from the chosen end instead of splitting the payload:
+ * splitting allocates one string per line of a multi-megabyte observation on
+ * every projection, to keep at most a few hundred bytes of it.
+ */
 function completeLineExcerpt(text: string, budgetBytes: number, fromEnd: boolean): string {
-	const lines = text.split(/(?<=\n)/);
-	const selected: string[] = [];
 	let selectedBytes = 0;
-	let index = fromEnd ? lines.length - 1 : 0;
 
-	while (index >= 0 && index < lines.length) {
-		const line = lines[index];
-		if (line === undefined) break;
-		const lineBytes = Buffer.byteLength(line, "utf8");
-		if (selectedBytes + lineBytes > budgetBytes) break;
-		if (fromEnd) selected.unshift(line);
-		else selected.push(line);
-		selectedBytes += lineBytes;
-		index += fromEnd ? -1 : 1;
+	if (fromEnd) {
+		let start = text.length;
+		while (start > 0) {
+			const previousBreak = start >= 2 ? text.lastIndexOf("\n", start - 2) : -1;
+			const lineStart = previousBreak + 1;
+			const lineBytes = Buffer.byteLength(text.slice(lineStart, start), "utf8");
+			if (selectedBytes + lineBytes > budgetBytes) break;
+			selectedBytes += lineBytes;
+			start = lineStart;
+		}
+		return text.slice(start);
 	}
 
-	return selected.join("");
+	let end = 0;
+	while (end < text.length) {
+		const nextBreak = text.indexOf("\n", end);
+		const lineEnd = nextBreak < 0 ? text.length : nextBreak + 1;
+		const lineBytes = Buffer.byteLength(text.slice(end, lineEnd), "utf8");
+		if (selectedBytes + lineBytes > budgetBytes) break;
+		selectedBytes += lineBytes;
+		end = lineEnd;
+	}
+	return text.slice(0, end);
 }
 
 export function placeholderFor(observation: Observation): string {
