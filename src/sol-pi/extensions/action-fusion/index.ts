@@ -28,6 +28,7 @@ import {
 	type WriteToolOptions,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { resolveToolPath } from "./file-queue.ts";
 import { renderSolPiTool, showSolPiSavings } from "../../tui.ts";
 import {
@@ -66,6 +67,17 @@ function memoizeByCwd<T>(create: (cwd: string) => T): (cwd: string) => T {
 	};
 }
 
+/**
+ * Validate a mutation input against the base tool schema so hosts that do not
+ * run their own argument validation surface a clean error instead of leaking an
+ * implementation-internal TypeError from the underlying write/edit execute.
+ */
+function mutationValidationError(toolName: string, schema: unknown, input: unknown): string | null {
+	if (Value.Check(schema as never, input)) return null;
+	const first = [...Value.Errors(schema as never, input)][0];
+	return `Validation failed for tool "${toolName}": ${first?.message ?? "invalid arguments"}`;
+}
+
 export function createActionFusionExtension(options: ActionFusionOptions = {}): ExtensionFactory {
 	const baseEdit = memoizeByCwd((cwd: string) => createEditToolDefinition(cwd, options.editOptions));
 	const baseWrite = memoizeByCwd((cwd: string) => createWriteToolDefinition(cwd, options.writeOptions));
@@ -88,6 +100,8 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 			parameters: editParameters,
 			async execute(toolCallId, input, signal, onUpdate, ctx) {
 				const { then_run, ...editInput } = input as typeof input & { then_run?: ThenRunInput };
+				const validationError = mutationValidationError("edit", editTemplate.parameters, editInput);
+				if (validationError) throw new Error(validationError);
 				const result = await executeMutationThenRun({
 					toolCallId,
 					absolutePath: resolveToolPath(ctx.cwd, input.path),
@@ -122,6 +136,8 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 			parameters: writeParameters,
 			async execute(toolCallId, input, signal, onUpdate, ctx) {
 				const { then_run, ...writeInput } = input as typeof input & { then_run?: ThenRunInput };
+				const validationError = mutationValidationError("write", writeTemplate.parameters, writeInput);
+				if (validationError) throw new Error(validationError);
 				const result = await executeMutationThenRun({
 					toolCallId,
 					absolutePath: resolveToolPath(ctx.cwd, input.path),
