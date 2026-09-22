@@ -9,6 +9,7 @@ import {
 	parsePlanSteps,
 	type PlanStep,
 } from "../src/sol-pi/extensions/online-context-compact/index.ts";
+import { MAX_PLAN_STRING_LENGTH } from "../src/sol-pi/extensions/online-context-compact/plan.ts";
 
 const OPEN = [{ id: "build", goal: "build it", status: "in_progress" }] as const satisfies readonly PlanStep[];
 const DONE = [{ id: "build", goal: "build it", status: "completed" }] as const satisfies readonly PlanStep[];
@@ -21,6 +22,20 @@ describe("Online Context Compact plans", () => {
 		expect(parsePlanSteps([{ id: "x", goal: "a", status: "pending" }, { id: "x", goal: "b", status: "pending" }]))
 			.toBeUndefined();
 		expect(parsePlanSteps(OPEN)).toEqual(OPEN);
+	});
+
+	it.each([
+		{ name: "astral code points", unit: "😀" },
+		{ name: "combining sequences", unit: "a\u0301" },
+	])("matches TypeBox string-length semantics for $name", ({ unit }) => {
+		const bounded = unit.repeat(MAX_PLAN_STRING_LENGTH);
+		expect(Buffer.byteLength(bounded)).toBeGreaterThan(MAX_PLAN_STRING_LENGTH);
+
+		expect(parsePlanSteps([{ id: bounded, goal: bounded, status: "pending" }])).toEqual([
+			{ id: bounded, goal: bounded, status: "pending" },
+		]);
+		expect(parsePlanSteps([{ id: `${bounded}a`, goal: "goal", status: "pending" }])).toBeUndefined();
+		expect(parsePlanSteps([{ id: "unicode", goal: `${bounded}a`, status: "pending" }])).toBeUndefined();
 	});
 
 	it("detects only new transitions into completed", () => {

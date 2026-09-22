@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
-import { parsePlanSteps, type PlanStep } from "./plan.ts";
+import { parsePersistedPlanSteps, type PlanStep } from "./plan.ts";
 
 export const ONLINE_STATE_ENTRY = "sol-pi-online-context-state-v1";
 
@@ -86,7 +86,7 @@ function progressSummary(value: unknown): ProgressSummary | undefined {
 function parseOnlineState(value: unknown): OnlineState | undefined {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return;
 	const record = value as Record<string, unknown>;
-	const plan = parsePlanSteps(record.plan);
+	const plan = parsePersistedPlanSteps(record.plan);
 	const pendingProgress = Array.isArray(record.pendingProgress)
 		? record.pendingProgress.map(progressSummary)
 		: undefined;
