@@ -17,6 +17,7 @@
  * Storage lives under the active Pi session directory.
  */
 
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -34,6 +35,8 @@ import {
 	isPureTextResult,
 	observationPath,
 	placeholderFor,
+	SEARCH_MAX_MATCHES,
+	searchObservation,
 	type RecallChunk,
 	readRecallChunk,
 } from "./observation.ts";
@@ -47,6 +50,18 @@ const RECALL_LIMITS = {
 	maxBytes: RECALL_MAX_BYTES - RECALL_HEADER_RESERVE_BYTES,
 	maxLines: RECALL_MAX_LINES - RECALL_HEADER_LINES,
 };
+
+function isWellFormedUnicode(value: string): boolean {
+	for (let index = 0; index < value.length; index += 1) {
+		const code = value.charCodeAt(index);
+		if (code >= 0xd800 && code <= 0xdbff) {
+			const next = value.charCodeAt(index + 1);
+			if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+			index += 1;
+		} else if (code >= 0xdc00 && code <= 0xdfff) return false;
+	}
+	return true;
+}
 
 export function createObservationPackExtension(): ExtensionFactory {
 	return (pi: ExtensionAPI) => {
@@ -65,16 +80,71 @@ export function createObservationPackExtension(): ExtensionFactory {
 		pi.registerTool({
 			name: "obs_recall",
 			label: "Recall Observation",
-			description: "Read a stored large tool result by observation id and byte offset.",
-			promptSnippet: "Recall a paged excerpt from a previously replaced large tool result",
+			description: "Read a stored large tool result by byte offset, or search it for literal UTF-8 text.",
+			promptSnippet: "Recall pages or search a replaced large tool result with obs_recall",
 			renderShell: "self",
 			parameters: Type.Object({
 				id: Type.String({ description: "Observation id from a placeholder" }),
 				offset: Type.Optional(Type.Integer({ minimum: 0, description: "Byte offset, default 0" })),
+				query: Type.Optional(Type.String({ description: "Literal UTF-8 search text (up to 256 bytes)" })),
 			}),
-			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 				if (!isObservationId(params.id)) throw new Error(`Unknown observation id: ${params.id}`);
 				const offset = params.offset ?? 0;
+				if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("Offset must be a non-negative safe integer");
+				if (params.query !== undefined) {
+					if (params.query.length === 0) throw new Error("Search query must not be empty");
+					if (!isWellFormedUnicode(params.query)) throw new Error("Search query must be well-formed Unicode");
+					const query = Buffer.from(params.query, "utf8");
+					if (query.length > 256) throw new Error("Search query exceeds 256 UTF-8 bytes");
+					const activeSignal = signal ?? ctx.signal;
+					let search;
+					try {
+						search = await searchObservation(
+							observationPath(runtimeRoot(ctx), params.id),
+							query,
+							offset,
+							RECALL_MAX_BYTES - RECALL_HEADER_RESERVE_BYTES,
+							activeSignal,
+						);
+					} catch (error) {
+						if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+							throw new Error(`Unknown observation id: ${params.id}`);
+						}
+						throw error;
+					}
+					const header = [
+						`[obs_recall search id=${params.id} offset=${offset} next_offset=${search.nextOffset} eof=${search.eof}]`,
+						`[matches=${search.matches.length}/${SEARCH_MAX_MATCHES} scanned_bytes=${search.scannedBytes}; contexts are JSON strings]`,
+					].join("\n");
+					const content = `${header}\n${search.matches.map((match) => JSON.stringify(match)).join("\n")}`;
+					if (Buffer.byteLength(content, "utf8") > RECALL_MAX_BYTES || countLines(content) > RECALL_MAX_LINES) {
+						throw new Error("Recall output exceeded its hard limit");
+					}
+					const queryHash = createHash("sha256").update(query).digest("hex");
+					await ledgerFor(ctx)({
+						event: "search",
+						id: params.id,
+						offset,
+						queryHash,
+						queryBytes: query.length,
+						matches: search.matches.length,
+						scannedBytes: search.scannedBytes,
+						nextOffset: search.nextOffset,
+						eof: search.eof,
+					});
+					return {
+						content: [{ type: "text", text: content }],
+						details: {
+							id: params.id,
+							offset,
+							matches: search.matches,
+							scannedBytes: search.scannedBytes,
+							nextOffset: search.nextOffset,
+							eof: search.eof,
+						},
+					};
+				}
 				let chunk: RecallChunk;
 				try {
 					chunk = await readRecallChunk(observationPath(runtimeRoot(ctx), params.id), offset, RECALL_LIMITS);
@@ -115,17 +185,23 @@ export function createObservationPackExtension(): ExtensionFactory {
 			},
 			renderCall(params, theme) {
 				const offset = params.offset ?? 0;
-				const base = new Text(theme.fg("dim", `Recall ${params.id} from byte ${offset}`), 0, 0);
+				const base = new Text(
+					theme.fg("dim", params.query === undefined ? `Recall ${params.id} from byte ${offset}` : `Search ${params.id} from byte ${offset}`),
+					0,
+					0,
+				);
 				return renderSolPiTool(theme, "Observation Pack", "full observation replay avoided", base);
 			},
 			renderResult(result, { isPartial }, theme) {
-				const details = result.details as { bytes?: number; lines?: number } | undefined;
+				const details = result.details as { bytes?: number; lines?: number; matches?: readonly unknown[]; scannedBytes?: number } | undefined;
 				const base = new Text(
 					theme.fg(
 						isPartial ? "warning" : "dim",
 						isPartial
 							? "Recalling the requested slice..."
-							: `Recalled ${details?.bytes ?? 0} bytes across ${details?.lines ?? 0} lines`,
+							: details?.matches
+								? `Found ${details.matches.length} matches after scanning ${details.scannedBytes ?? 0} bytes`
+								: `Recalled ${details?.bytes ?? 0} bytes across ${details?.lines ?? 0} lines`,
 					),
 					0,
 					0,

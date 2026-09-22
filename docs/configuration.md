@@ -49,6 +49,8 @@ This preflight does not make every valid SoL-Pi configuration all-enabled. Witho
 - `onlineContextCompact`: registers `update_plan` and boundary-driven native compaction after the other SoL-Pi context transformers.
 - `cacheWriteReadRatio`: supplies the single economic decision ratio used by Online Context Compact.
 
+`obs_recall` accepts the original `id` and optional byte `offset` paging arguments. Its optional `query` adds case-sensitive literal UTF-8 byte search; it accepts whitespace, NUL, and multiline text, but rejects empty, malformed-Unicode, or over-256-byte queries. Search offsets are inclusive match starts, matches overlap, and returned spans use 0-based byte offsets with exclusive ends. Line numbers are LF-based and 1-based (a LF belongs to the line it ends). Each result has a UTF-8-safe bounded context and `next_offset`; continue until `eof` is true. Search returns at most 20 matches and is also constrained by the existing 16 KiB/400-line result limit. A cap can require one further empty continuation to establish EOF. To avoid a persistent line index, an arbitrary search offset rescans its prefix; this trades linear local I/O for bounded memory.
+
 ## Evidence-Preserving Reducer runtime inputs
 
 The release entry supplies the run label and session-derived storage. It uses one configurable model route:
