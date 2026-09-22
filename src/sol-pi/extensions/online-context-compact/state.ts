@@ -186,8 +186,8 @@ export function recordCompaction(
 		positiveContextDeltaTotal: 0,
 		positiveContextDeltaCount: 0,
 		nativeCompactionCount: state.nativeCompactionCount + 1,
-		cacheDebtTokens: Math.max(0, debt.debtTokens),
-		cacheDebtRepaymentTokens: Math.max(0, debt.repaymentTokens),
+		cacheDebtTokens: state.cacheDebtTokens + Math.max(0, debt.debtTokens),
+		cacheDebtRepaymentTokens: state.cacheDebtRepaymentTokens + Math.max(0, debt.repaymentTokens),
 	};
 }
 

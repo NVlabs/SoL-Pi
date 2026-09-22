@@ -44,6 +44,8 @@ export type CompactionDecision = {
 	readonly writeTokens: number;
 	readonly archiveTokens: number;
 	readonly memoTokens: number;
+	/** Estimated context written after compaction, including the replacement memo. */
+	readonly postCompactionTokens: number;
 	readonly contextTokens: number;
 	readonly completedBoundaryRequestCounts: readonly number[] | null;
 	readonly requestsPerBoundaryMean: number | null;
@@ -147,15 +149,16 @@ export function decideCompaction(input: {
 					averageContextTokenIncrement: input.averageContextTokenIncrement,
 				});
 	const savingTokens = input.archiveTokens - input.memoTokens;
+	const postCompactionTokens = Math.max(0, input.writeTokens - savingTokens);
 	const incrementalCacheCostRatio =
 		input.cacheWriteReadRatio === null ? null : Math.max(0, input.cacheWriteReadRatio - 1);
+	const newDebtTokens = postCompactionTokens * (incrementalCacheCostRatio ?? 0);
 	const breakevenRequests =
-		savingTokens > 0 && incrementalCacheCostRatio !== null
-			? (input.writeTokens * incrementalCacheCostRatio) / savingTokens
-			: null;
+		savingTokens > 0 && incrementalCacheCostRatio !== null ? newDebtTokens / savingTokens : null;
+	const combinedRepaymentTokens = input.cacheDebtRepaymentTokens + savingTokens;
 	const combinedBreakevenRequests =
-		savingTokens > 0 && incrementalCacheCostRatio !== null
-			? (input.carriedDebtTokens + input.writeTokens * incrementalCacheCostRatio) / savingTokens
+		savingTokens > 0 && incrementalCacheCostRatio !== null && combinedRepaymentTokens > 0
+			? (input.carriedDebtTokens + newDebtTokens) / combinedRepaymentTokens
 			: null;
 	const firstCompaction = input.priorCompactionCount === 0;
 	const effectiveHorizonRequests =
@@ -199,6 +202,7 @@ export function decideCompaction(input: {
 		writeTokens: input.writeTokens,
 		archiveTokens: input.archiveTokens,
 		memoTokens: input.memoTokens,
+		postCompactionTokens,
 		contextTokens: input.contextTokens,
 		...(horizon ?? {
 			completedBoundaryRequestCounts: null,

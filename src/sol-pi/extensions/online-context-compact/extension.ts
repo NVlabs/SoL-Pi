@@ -329,7 +329,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 			}
 
 			activeDebt = {
-				debtTokens: pending.decision.writeTokens * (pending.decision.incrementalCacheCostRatio ?? 0),
+				debtTokens: pending.decision.postCompactionTokens * (pending.decision.incrementalCacheCostRatio ?? 0),
 				repaymentTokens: Math.max(0, pending.decision.archiveTokens - pending.decision.memoTokens),
 			};
 			let compacted = false;
