@@ -66,8 +66,9 @@ function resolveCacheWriteReadRatio(value: number | null | undefined): number | 
 	return value;
 }
 
-function tokenEstimate(text: string): number {
-	return Math.ceil(Buffer.byteLength(text) / 4);
+function tokenEstimate(text: string | string[]): number {
+	const joined = Array.isArray(text) ? text.join("\n") : text;
+	return Math.ceil(Buffer.byteLength(joined) / 4);
 }
 
 function result(text: string, details: Readonly<Record<string, unknown>>): AgentToolResult<Readonly<Record<string, unknown>>> {
