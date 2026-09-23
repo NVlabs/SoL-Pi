@@ -300,6 +300,37 @@ describe("observation pack", () => {
 		await expect(readFile(join(targetDir, `${id}.txt`))).rejects.toMatchObject({ code: "ENOENT" });
 	});
 
+	it("excerpts a payload whose only line is longer than the excerpt budget", async () => {
+		const sessionDir = await sessionRoot();
+		// One line: minified JSON, `jq -c` output, a curl body.
+		const body = `HEAD-MARKER${"-pad".repeat(5_000)}TAIL-MARKER`;
+		const projected = await project(observationPackPi(), toolResult(body), sessionDir, 3);
+		const placeholder = projected[2] ?? "";
+		const [, headExcerpt, , tailExcerpt] = placeholder.split("\n").slice(7);
+
+		expect(placeholder).toMatch(/^\[large tool result replaced/u);
+		expect(headExcerpt).toContain("HEAD-MARKER");
+		expect(tailExcerpt).toContain("TAIL-MARKER");
+		expect(Buffer.byteLength(headExcerpt ?? "", "utf8")).toBe(512);
+		expect(Buffer.byteLength(tailExcerpt ?? "", "utf8")).toBe(512);
+		expect(placeholder).toContain("[no complete line fits; first 512 bytes]");
+		expect(placeholder).toContain("[middle omitted; no complete line fits; last 512 bytes]");
+	});
+
+	it("cuts a line-less excerpt on a UTF-8 boundary", async () => {
+		const sessionDir = await sessionRoot();
+		const body = "☾".repeat(20_000);
+		const projected = await project(observationPackPi(), toolResult(body), sessionDir, 3);
+		const [, headExcerpt, , tailExcerpt] = (projected[2] ?? "").split("\n").slice(7);
+
+		for (const excerpt of [headExcerpt ?? "", tailExcerpt ?? ""]) {
+			expect(excerpt.length).toBeGreaterThan(0);
+			expect(excerpt).not.toContain("�");
+			expect(Buffer.byteLength(excerpt, "utf8")).toBeLessThanOrEqual(512);
+			expect(excerpt).toBe("☾".repeat(excerpt.length));
+		}
+	});
+
 	it("keeps the mutation confirmation and then_run marker of a fused write", async () => {
 		const sessionDir = await sessionRoot();
 		const pi = observationPackPi();
