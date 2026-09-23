@@ -300,6 +300,27 @@ describe("observation pack", () => {
 		await expect(readFile(join(targetDir, `${id}.txt`))).rejects.toMatchObject({ code: "ENOENT" });
 	});
 
+	it("fails open on an ephemeral session instead of erroring on every request", async () => {
+		// `pi --no-session` builds SessionManager.inMemory(), whose getSessionDir()
+		// is undefined, so there is no persistent directory to archive into.
+		const ephemeralA = new FakeSessionManager([], SESSION_ID, "");
+		const ephemeralB = new FakeSessionManager([], "session-b", "");
+		const pi = observationPackPi();
+		const body = repeatPastThreshold("ephemeral session output\n");
+		const message = toolResult(body);
+		const reported = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+		for (const context of [fakeContext(ephemeralA), fakeContext(ephemeralB)]) {
+			for (let request = 0; request < 3; request += 1) {
+				const projected = await pi.emitContext([message], context);
+				expect(resultText(projected[0]!)).toBe(body);
+			}
+		}
+
+		expect(reported).toHaveBeenCalledTimes(2);
+		expect(String(reported.mock.calls[0]?.[0])).toContain("[observationpack] disabled for this session");
+	});
+
 	it("keeps the mutation confirmation and then_run marker of a fused write", async () => {
 		const sessionDir = await sessionRoot();
 		const pi = observationPackPi();
