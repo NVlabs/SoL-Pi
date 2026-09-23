@@ -21,6 +21,7 @@ export interface SolPiConfig {
 	readonly evidencePreservingReducerModel: string;
 	readonly evidencePreservingReducerProvider: string;
 	readonly onlineContextCompact: boolean;
+	readonly trajectoryInspector: boolean;
 	readonly cacheWriteReadRatio: number;
 }
 
@@ -32,6 +33,7 @@ export const DEFAULT_CONFIG: SolPiConfig = Object.freeze({
 	evidencePreservingReducerModel: DEFAULT_REDUCER_MODEL,
 	evidencePreservingReducerProvider: DEFAULT_REDUCER_PROVIDER,
 	onlineContextCompact: false,
+	trajectoryInspector: false,
 	cacheWriteReadRatio: DEFAULT_CACHE_WRITE_READ_RATIO,
 });
 
@@ -40,6 +42,7 @@ const FEATURE_KEYS = [
 	"observationPack",
 	"evidencePreservingReducer",
 	"onlineContextCompact",
+	"trajectoryInspector",
 ] as const;
 const STRING_KEYS = ["evidencePreservingReducerModel", "evidencePreservingReducerProvider"] as const;
 const CONFIG_KEYS = new Set<string>(["version", ...FEATURE_KEYS, ...STRING_KEYS, "cacheWriteReadRatio"]);

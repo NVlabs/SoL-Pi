@@ -12,11 +12,12 @@ const FEATURE_KEYS = [
 	"evidencePreservingReducer",
 	"onlineContextCompact",
 ];
+const OPTIONAL_KEYS = ["trajectoryInspector"];
 const DEFAULT_CACHE_WRITE_READ_RATIO = 12.5;
 const DEFAULT_EPR_REDUCER_PROVIDER = ["openai", "codex"].join("-");
 const DEFAULT_EPR_REDUCER_MODEL = ["gpt-5.6", "luna"].join("-");
 const STRING_KEYS = ["evidencePreservingReducerModel", "evidencePreservingReducerProvider"];
-const CONFIG_KEYS = new Set(["version", ...FEATURE_KEYS, ...STRING_KEYS, "cacheWriteReadRatio"]);
+const CONFIG_KEYS = new Set(["version", ...FEATURE_KEYS, ...OPTIONAL_KEYS, ...STRING_KEYS, "cacheWriteReadRatio"]);
 
 function fail(message) {
 	throw new Error(message);
@@ -73,6 +74,11 @@ function validateConfig(value, requireAllEnabled) {
 		if (configured !== undefined && typeof configured !== "boolean") fail(`${key} must be boolean`);
 		effective[key] = configured ?? false;
 		if (requireAllEnabled && effective[key] !== true) fail(`${key} must be true`);
+	}
+	for (const key of OPTIONAL_KEYS) {
+		const configured = value[key];
+		if (configured !== undefined && typeof configured !== "boolean") fail(`${key} must be boolean`);
+		effective[key] = configured ?? false;
 	}
 	const cacheWriteReadRatio = Object.hasOwn(value, "cacheWriteReadRatio")
 		? value.cacheWriteReadRatio
