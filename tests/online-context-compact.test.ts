@@ -7,6 +7,7 @@ import type { CompactOptions, ExtensionContext } from "@earendil-works/pi-coding
 import { describe, expect, it, vi } from "vitest";
 import {
 	BOUNDARY_COMPACTION_INSTRUCTIONS,
+	BENIGN_NOOP_REMINDER,
 	createOnlineContextCompactExtension,
 	DEFAULT_KEEP_RECENT_TOKENS,
 	POST_COMPACTION_PLAN_REMINDER,
@@ -208,6 +209,88 @@ describe("Online Context Compact extension", () => {
 		expect(firstSettlementFinished).toBe(true);
 		expect(await pi.emit("session_before_tree", { type: "session_before_tree" }, context)).toBeUndefined();
 		expect(restoreOnlineState(manager.entries)).toMatchObject({ nativeCompactionCount: 1, pendingProgress: [] });
+	});
+	it("treats a \"Nothing to compact\" refusal as a benign no-op and re-drives the parent task", async () => {
+		const manager = new FakeSessionManager();
+		manager.appendMessage({ role: "user", content: `old ${"x".repeat(2_000)}`, timestamp: Date.now() });
+		manager.appendMessage(assistant(`work ${"y".repeat(2_000)}`));
+		const pi = new FakePi(manager);
+		createOnlineContextCompactExtension({ cacheWriteReadRatio: 12.5, keepRecentTokens: 1 })(pi.asExtensionApi());
+		let idle = true;
+		const sendMessage = pi.sendMessage.bind(pi);
+		vi.spyOn(pi, "sendMessage").mockImplementation((message, options) => {
+			idle = false;
+			sendMessage(message, options);
+		});
+		const abort = vi.fn();
+		const compactCalls: CompactOptions[] = [];
+		const compact = (options: CompactOptions = {}): void => {
+			compactCalls.push(options);
+			// The harness refuses: our feasibility estimate disagreed with the
+			// projected cut point (session too small). Old behavior: the extension
+			// re-threw this and crashed the session with no continuation hook.
+			options.onError?.(new Error("Nothing to compact (session too small)"));
+		};
+		const context = fakeContext(manager, {
+			abort,
+			compact,
+			isIdle: () => idle,
+			getSystemPrompt: () => "test prompt",
+			getContextUsage: () => ({ tokens: 195_000, contextWindow: 200_000, percent: 97.5 }),
+		});
+
+		await pi.emit("session_start", { type: "session_start" }, context);
+		await pi.emitContext(buildSessionMessages(), context);
+		await pi.emit("before_provider_request", { type: "before_provider_request", payload: {} }, context);
+		await runPlan(pi, context, "plan-open", { steps: OPEN });
+		await runPlan(pi, context, "plan-done", { steps: DONE, progress: PROGRESS });
+		await pi.emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 1,
+				message: assistant("boundary"),
+				toolResults: [
+					{
+						role: "toolResult",
+						toolCallId: "plan-done",
+						toolName: "update_plan",
+						content: [{ type: "text", text: "done" }],
+						isError: false,
+						timestamp: Date.now(),
+					},
+				],
+			},
+			context,
+		);
+		expect(abort).toHaveBeenCalledOnce();
+
+		idle = true;
+		// Old code: this settlement rejects with the refusal error. New code:
+		// the refusal is benign; the continuation reminder must fire instead.
+		let firstSettlementFinished = false;
+		const firstSettlement = pi.emit("agent_settled", { type: "agent_settled" }, context).then(() => {
+			firstSettlementFinished = true;
+		});
+		await vi.waitFor(() => expect(compactCalls).toHaveLength(1));
+		await vi.waitFor(() => expect(pi.sentMessages).toHaveLength(1));
+		expect(pi.sentMessages).toEqual([
+			{
+				message: {
+					customType: "sol-pi-online-context-compact",
+					content: BENIGN_NOOP_REMINDER,
+					display: false,
+				},
+				options: { triggerTurn: true },
+			},
+		]);
+		expect(firstSettlementFinished).toBe(false);
+
+		idle = true;
+		await pi.emit("agent_settled", { type: "agent_settled" }, context);
+		await firstSettlement;
+		expect(firstSettlementFinished).toBe(true);
+		expect(await pi.emit("session_before_tree", { type: "session_before_tree" }, context)).toBeUndefined();
 	});
 });
 
