@@ -48,7 +48,6 @@ export type OnlineContextCompactOptions = {
 type PendingBoundary = { readonly toolCallId: string };
 type SelectedCompaction = { readonly decision: CompactionDecision };
 type CacheDebt = { readonly debtTokens: number; readonly repaymentTokens: number };
-type PendingContinuation = { readonly promise: Promise<void>; readonly resolve: () => void };
 
 export function resolveKeepRecentTokens(value: number | undefined): number {
 	const resolved = value ?? DEFAULT_KEEP_RECENT_TOKENS;
@@ -163,20 +162,9 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 		let pendingBoundary: PendingBoundary | undefined;
 		let selected: SelectedCompaction | undefined;
 		let activeDebt: CacheDebt | undefined;
-		let nextContinuation: PendingContinuation | undefined;
 		let compactionInFlight = false;
 
-		const releaseContinuation = (): void => {
-			const continuation = nextContinuation;
-			nextContinuation = undefined;
-			continuation?.resolve();
-		};
-		const releaseParentContinuation = (continuation: PendingContinuation | undefined): void => {
-			if (continuation) setTimeout(continuation.resolve, 0);
-		};
-
 		const restore = (context: ExtensionContext): void => {
-			releaseContinuation();
 			state = restoreOnlineState(context.sessionManager.getBranch());
 			restored = true;
 			observedMessages = buildSessionContext(
@@ -312,19 +300,13 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 		});
 
 		pi.on("agent_settled", async (_event, context) => {
-			// sendMessage() starts a turn without returning its promise. Capture the
-			// child settlement so print/JSON mode cannot dispose while it is running.
-			const parentContinuation = nextContinuation;
-			nextContinuation = undefined;
 			const pending = selected;
 			selected = undefined;
 			if (!context.isIdle()) {
 				selected = pending;
-				nextContinuation = parentContinuation;
 				return;
 			}
 			if (!pending) {
-				releaseParentContinuation(parentContinuation);
 				return;
 			}
 
@@ -379,39 +361,24 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 				}
 
 				if (compacted) {
-					let resolveContinuation!: () => void;
-					const continuation: PendingContinuation = {
-						promise: new Promise<void>((resolve) => {
-							resolveContinuation = resolve;
-						}),
-						resolve: () => resolveContinuation(),
-					};
-					nextContinuation = continuation;
-					try {
-						pi.sendMessage(
-							{
-								customType: "sol-pi-online-context-compact",
-								content: POST_COMPACTION_PLAN_REMINDER,
-								display: false,
-							},
-							{ triggerTurn: true },
-						);
-					} catch (error) {
-						if (nextContinuation === continuation) nextContinuation = undefined;
-						continuation.resolve();
-						throw error;
-					}
-					if (context.isIdle() && nextContinuation === continuation) {
-						nextContinuation = undefined;
-						continuation.resolve();
-						throw new Error("Online context compact continuation did not start");
-					}
-					await continuation.promise;
+					// pi defers sendMessage({ triggerTurn: true }) issued during the
+					// agent_settled dispatch: the continuation turn starts right after
+					// all settled handlers return, as a deferred settled action, so the
+					// original prompt() still spans its whole settlement. Awaiting the
+					// continuation here would deadlock the dispatch (the turn cannot
+					// start until this handler returns), so send and return instead.
+					pi.sendMessage(
+						{
+							customType: "sol-pi-online-context-compact",
+							content: POST_COMPACTION_PLAN_REMINDER,
+							display: false,
+						},
+						{ triggerTurn: true },
+					);
 				}
 			} finally {
 				compactionInFlight = false;
 				activeDebt = undefined;
-				releaseParentContinuation(parentContinuation);
 			}
 		});
 
@@ -432,7 +399,6 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 		});
 
 		pi.on("session_shutdown", () => {
-			releaseContinuation();
 			pendingBoundary = undefined;
 			selected = undefined;
 			activeDebt = undefined;
