@@ -190,7 +190,6 @@ describe("Online Context Compact extension", () => {
 
 		expect(compactCalls).toHaveLength(1);
 		expect(compactCalls[0]?.customInstructions).toBe(BOUNDARY_COMPACTION_INSTRUCTIONS);
-		expect(firstSettlementFinished).toBe(false);
 		expect(pi.sentMessages).toEqual([
 			{
 				message: {
@@ -202,10 +201,16 @@ describe("Online Context Compact extension", () => {
 			},
 		]);
 
-		idle = true;
-		await pi.emit("agent_settled", { type: "agent_settled" }, context);
+		// The handler must return as soon as the reminder is sent: pi defers the
+		// continuation turn until every settled handler has returned, so keeping
+		// this settlement open here would deadlock the dispatch. The continuation
+		// still settles before the original prompt returns (see the agent-session
+		// integration tests).
 		await firstSettlement;
 		expect(firstSettlementFinished).toBe(true);
+
+		idle = true;
+		await pi.emit("agent_settled", { type: "agent_settled" }, context);
 		expect(await pi.emit("session_before_tree", { type: "session_before_tree" }, context)).toBeUndefined();
 		expect(restoreOnlineState(manager.entries)).toMatchObject({ nativeCompactionCount: 1, pendingProgress: [] });
 	});
