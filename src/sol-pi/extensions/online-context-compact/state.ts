@@ -180,7 +180,10 @@ export function recordCompaction(
 	return {
 		...state,
 		epoch: state.epoch + 1,
-		plan: [],
+		// Preserve the plan: the post-compaction reminder asks for a fresh plan,
+		// and re-sending the same completed steps must not register as new
+		// progress boundaries, which would immediately re-trigger compaction.
+		plan: [...state.plan],
 		pendingProgress: [],
 		lastContextTokens: null,
 		positiveContextDeltaTotal: 0,

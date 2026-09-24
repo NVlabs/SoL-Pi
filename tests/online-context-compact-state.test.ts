@@ -13,6 +13,7 @@ import {
 	recordProviderRequest,
 	restoreOnlineState,
 } from "../src/sol-pi/extensions/online-context-compact/state.ts";
+import { analyzePlanTransition } from "../src/sol-pi/extensions/online-context-compact/plan.ts";
 import { FakePi, FakeSessionManager } from "./helpers.ts";
 
 const PLAN = [
@@ -97,11 +98,19 @@ describe("Online Context Compact state snapshots", () => {
 
 		expect(after).toMatchObject({
 			epoch: 1,
+			plan: PLAN,
 			pendingProgress: [],
 			nativeCompactionCount: 1,
 			cacheDebtTokens: 1_200,
 			cacheDebtRepaymentTokens: 300,
 		});
+	});
+
+	it("does not treat a plan re-issued after compaction as new progress", () => {
+		const before = recordBoundary(recordProviderRequest(initialOnlineState(), 5_000), PLAN, PROGRESS);
+		const after = recordCompaction(before, { debtTokens: 0, repaymentTokens: 0 });
+
+		expect(analyzePlanTransition(after.plan, PLAN).completedSteps).toEqual([]);
 	});
 
 	it("drops stale plan history when the user corrects an active run", () => {
