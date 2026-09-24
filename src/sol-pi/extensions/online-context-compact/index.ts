@@ -16,6 +16,7 @@ export {
 } from "./economics.ts";
 export {
 	BOUNDARY_COMPACTION_INSTRUCTIONS,
+	BENIGN_NOOP_REMINDER,
 	createOnlineContextCompactExtension,
 	DEFAULT_KEEP_RECENT_TOKENS,
 	DEFAULT_NATIVE_SUMMARY_TOKEN_ESTIMATE,

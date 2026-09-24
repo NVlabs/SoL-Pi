@@ -34,6 +34,18 @@ import { registerOnlineTools, type PlanUpdateInput } from "./tools.ts";
 
 export const DEFAULT_KEEP_RECENT_TOKENS = 20_000;
 export const DEFAULT_NATIVE_SUMMARY_TOKEN_ESTIMATE = 1_000;
+/**
+ * Compaction refusals meaning "nothing worth compacting" — the harness's
+ * projected cut point can disagree with our nativeCompactionFeasible estimate
+ * (e.g. all remaining messages are non-summarizable kinds). These are no-ops,
+ * not failures: the turn has already settled, so the session must continue
+ * normally instead of the extension crashing (which strands print mode with
+ * no continuation hook).
+ */
+const BENIGN_COMPACTION_REFUSALS = /nothing to compact|already compacted/i;
+export const BENIGN_NOOP_REMINDER =
+	"Compaction was not needed (nothing to compact). The parent task is still active. " +
+	"Before continuing work, call update_plan with a fresh plan for the remaining work.";
 export const BOUNDARY_COMPACTION_INSTRUCTIONS =
 	"Preserve completed work, verification results, important decisions, and remaining work.";
 export const POST_COMPACTION_PLAN_REMINDER =
@@ -373,12 +385,20 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 				if (
 					compactionError &&
 					compactionError.name !== "AbortError" &&
-					compactionError.message !== "Compaction cancelled"
+					compactionError.message !== "Compaction cancelled" &&
+					!BENIGN_COMPACTION_REFUSALS.test(compactionError.message)
 				) {
 					throw compactionError;
 				}
 
-				if (compacted) {
+				const benignRefusal = compactionError
+					? BENIGN_COMPACTION_REFUSALS.test(compactionError.message)
+					: false;
+
+				if (compacted || benignRefusal) {
+					// benignRefusal: the harness refused our compact as a no-op, but this
+				// handler aborted the turn to run it — re-drive the parent task so
+				// progress cannot strand with no continuation hook.
 					let resolveContinuation!: () => void;
 					const continuation: PendingContinuation = {
 						promise: new Promise<void>((resolve) => {
@@ -391,7 +411,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 						pi.sendMessage(
 							{
 								customType: "sol-pi-online-context-compact",
-								content: POST_COMPACTION_PLAN_REMINDER,
+								content: compacted ? POST_COMPACTION_PLAN_REMINDER : BENIGN_NOOP_REMINDER,
 								display: false,
 							},
 							{ triggerTurn: true },
