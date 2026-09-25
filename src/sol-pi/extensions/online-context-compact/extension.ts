@@ -4,9 +4,9 @@
  */
 import type { AgentMessage, AgentToolResult } from "@earendil-works/pi-agent-core";
 import {
+	buildContextEntries,
 	buildSessionContext,
 	estimateTokens,
-	findCutPoint,
 	sessionEntryToContextMessages,
 	type ExtensionContext,
 	type ExtensionFactory,
@@ -39,6 +39,18 @@ export const BOUNDARY_COMPACTION_INSTRUCTIONS =
 export const POST_COMPACTION_PLAN_REMINDER =
 	"Online context compaction finished. The parent task is still active. " +
 	"Before continuing work, call update_plan with a fresh plan for the remaining work.";
+export const SKIPPED_COMPACTION_CONTINUATION =
+	"Online context compaction was skipped: the session has nothing left to compact. " +
+	"The parent task is still active. Continue the remaining work from the current plan.";
+
+const BENIGN_COMPACTION_SKIP_MESSAGES: ReadonlySet<string> = new Set([
+	"Nothing to compact (session too small)",
+	"Already compacted",
+]);
+
+function isBenignCompactionSkip(error: Error | undefined): boolean {
+	return error !== undefined && BENIGN_COMPACTION_SKIP_MESSAGES.has(error.message);
+}
 
 export type OnlineContextCompactOptions = {
 	readonly cacheWriteReadRatio?: number | null;
@@ -87,63 +99,209 @@ function progressSummary(input: PlanUpdateInput, completedStepId: string): Progr
 	};
 }
 
-function compactionMessageCount(entries: readonly SessionEntry[], startIndex: number, endIndex: number): number {
-	let count = 0;
+type ProjectedEntry = { readonly sourceEntry: SessionEntry; readonly messages: readonly AgentMessage[] };
+type ProjectedCutPoint = {
+	readonly firstKeptEntryIndex: number;
+	readonly turnStartIndex: number;
+	readonly isSplitTurn: boolean;
+};
+
+const CUT_POINT_ROLES: ReadonlySet<string> = new Set([
+	"user",
+	"assistant",
+	"bashExecution",
+	"custom",
+	"branchSummary",
+	"compactionSummary",
+]);
+const TURN_START_ROLES: ReadonlySet<string> = new Set([
+	"user",
+	"bashExecution",
+	"custom",
+	"branchSummary",
+	"compactionSummary",
+]);
+
+/**
+ * Pi 0.87 introduced context edits; older releases have no such entries. The
+ * shape is read defensively so the check compiles against both type surfaces.
+ */
+type ContextEditShape = { readonly targetId?: unknown; readonly replacement?: unknown };
+
+function asContextEdit(entry: SessionEntry): (ContextEditShape & { readonly type?: string }) | undefined {
+	const shape = entry as unknown as ContextEditShape & { type?: string };
+	return shape.type === "context_edit" ? shape : undefined;
+}
+
+/** Latest context edit per target, mirroring how Pi's projection applies edits. */
+function latestContextEdits(entries: readonly SessionEntry[]): Map<string, ContextEditShape> {
+	const edits = new Map<string, ContextEditShape>();
+	for (const entry of entries) {
+		const edit = asContextEdit(entry);
+		if (edit && typeof edit.targetId === "string") edits.set(edit.targetId, edit);
+	}
+	return edits;
+}
+
+/**
+ * Reconstruct the projected window Pi's compaction preparation works on: the
+ * latest compaction entry first, its retained raw entries, everything appended
+ * after it, with omitted targets removed. Replacements keep their original
+ * size here, which can only overestimate the kept window and therefore never
+ * overstates feasibility.
+ */
+function projectBranchEntries(entries: readonly SessionEntry[]): ProjectedEntry[] {
+	const contextEntries = buildContextEntries([...entries]);
+	const edits = latestContextEdits(entries);
+	return contextEntries.map((sourceEntry, index) => {
+		const edit = edits.get(sourceEntry.id);
+		const messages =
+			sourceEntry.type === "compaction" && index > 0
+				? []
+				: edit && edit.replacement === null
+					? []
+					: sessionEntryToContextMessages(sourceEntry);
+		return { sourceEntry, messages };
+	});
+}
+
+function isProjectedTurnStart(entry: ProjectedEntry | undefined): boolean {
+	return (
+		entry !== undefined &&
+		entry.sourceEntry.type !== "compaction" &&
+		entry.messages.some((message) => TURN_START_ROLES.has(message.role))
+	);
+}
+
+function findProjectedTurnStartIndex(entries: readonly ProjectedEntry[], entryIndex: number, startIndex: number): number {
+	for (let index = entryIndex; index >= startIndex; index--) {
+		if (isProjectedTurnStart(entries[index])) return index;
+	}
+	return -1;
+}
+
+/** Mirrors Pi's projected cut-point selection (keepRecentTokens suffix budget). */
+function findProjectedCutPoint(
+	entries: readonly ProjectedEntry[],
+	startIndex: number,
+	endIndex: number,
+	keepRecentTokens: number,
+): ProjectedCutPoint {
+	const cutPoints: number[] = [];
 	for (let index = startIndex; index < endIndex; index++) {
 		const entry = entries[index];
-		if (entry && entry.type !== "compaction" && sessionEntryToContextMessages(entry).length > 0) count++;
+		if (!entry) continue;
+		if (
+			entry.sourceEntry.type !== "compaction" &&
+			entry.messages.some((message) => CUT_POINT_ROLES.has(message.role))
+		) {
+			cutPoints.push(index);
+		}
+	}
+	if (cutPoints.length === 0) {
+		return { firstKeptEntryIndex: startIndex, turnStartIndex: -1, isSplitTurn: false };
+	}
+
+	let accumulatedTokens = 0;
+	let exceededBudget = false;
+	let cutIndex = cutPoints[0] ?? startIndex;
+	for (let index = endIndex - 1; index >= startIndex; index--) {
+		const entry = entries[index];
+		if (!entry) continue;
+		const messageTokens = entry.messages.reduce((total, message) => total + estimateTokens(message), 0);
+		if (messageTokens === 0) continue;
+		accumulatedTokens += messageTokens;
+		if (accumulatedTokens >= keepRecentTokens) {
+			exceededBudget = true;
+			cutIndex = cutPoints.find((candidate) => candidate >= index) ?? cutPoints[cutPoints.length - 1] ?? cutIndex;
+			break;
+		}
+	}
+
+	// A recovery attempt and its omission edits are context-invisible after the
+	// last visible input; advance only for such a closed suffix.
+	const suffix = entries.slice(cutIndex + 1, endIndex);
+	const isIntrinsicallyVisible = (entry: ProjectedEntry): boolean =>
+		asContextEdit(entry.sourceEntry) === undefined &&
+		sessionEntryToContextMessages(entry.sourceEntry).length > 0;
+	const isOmitted = (entry: ProjectedEntry): boolean => isIntrinsicallyVisible(entry) && entry.messages.length === 0;
+	const omittedSuffixIds = new Set(suffix.filter(isOmitted).map((entry) => entry.sourceEntry.id));
+	const hasExternalReplacement = suffix.some((entry) => {
+		const edit = asContextEdit(entry.sourceEntry);
+		return (
+			edit !== undefined &&
+			edit.replacement !== null &&
+			typeof edit.targetId === "string" &&
+			!omittedSuffixIds.has(edit.targetId)
+		);
+	});
+	const isRecoveryOmissionSuffix =
+		exceededBudget &&
+		!hasExternalReplacement &&
+		suffix.some(
+			(entry) =>
+				entry.sourceEntry.type === "message" &&
+				entry.sourceEntry.message.role === "assistant" &&
+				isOmitted(entry),
+		) &&
+		suffix.every(
+			(entry) => entry.sourceEntry.type !== "compaction" && (!isIntrinsicallyVisible(entry) || isOmitted(entry)),
+		);
+	if (isRecoveryOmissionSuffix) cutIndex += 1;
+	while (cutIndex > startIndex) {
+		const previous = entries[cutIndex - 1];
+		if (!previous || previous.sourceEntry.type === "compaction" || previous.messages.length > 0) break;
+		cutIndex -= 1;
+	}
+	const startsTurn = isProjectedTurnStart(entries[cutIndex]);
+	const turnStartIndex = startsTurn ? -1 : findProjectedTurnStartIndex(entries, cutIndex, startIndex);
+	return { firstKeptEntryIndex: cutIndex, turnStartIndex, isSplitTurn: !startsTurn && turnStartIndex !== -1 };
+}
+
+function summarizableMessageCount(projected: readonly ProjectedEntry[], fromIndex: number, toIndex: number): number {
+	let count = 0;
+	for (let index = Math.max(0, fromIndex); index < toIndex; index++) {
+		const entry = projected[index];
+		if (!entry || entry.sourceEntry.type === "compaction") continue;
+		for (const message of entry.messages) {
+			// System messages are prompt state, not conversation; Pi's compaction
+			// preparation never summarizes them. The role is widened because older
+			// Pi type surfaces do not include "system" in AgentMessage.
+			if ((message.role as string) !== "system") count += 1;
+		}
 	}
 	return count;
 }
 
-function branchAfterAbort(entries: readonly SessionEntry[]): SessionEntry[] {
-	const last = entries.at(-1);
-	const markerProvider = ["sol", "pi"].join("-");
-	return [
-		...entries,
-		{
-			type: "message",
-			id: "sol-pi-online-context-compact-abort-marker",
-			parentId: last?.id ?? null,
-			timestamp: new Date(0).toISOString(),
-			message: {
-				role: "assistant",
-				content: [],
-				api: markerProvider,
-				provider: markerProvider,
-				model: "aborted",
-				usage: {
-					input: 0,
-					output: 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-					totalTokens: 0,
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-				},
-				stopReason: "aborted",
-				timestamp: 0,
-			},
-		} as SessionEntry,
-	];
-}
-
+/**
+ * Mirrors Pi's compaction preparation closely enough to predict its outcome:
+ * native compaction can run only when the projected window holds summarizable
+ * (non-system) messages before the projected cut point. Pi 0.87 projects the
+ * session and filters system messages out of the summary set, so counting raw
+ * entries (the pre-0.87 behavior) can claim feasibility where
+ * AgentSession.compact() then fails with "Nothing to compact (session too
+ * small)" after the turn was already aborted for it.
+ */
 function nativeCompactionFeasible(entries: readonly SessionEntry[], keepRecentTokens: number): boolean {
-	const path = branchAfterAbort(entries);
-	let startIndex = 0;
-	for (let index = path.length - 1; index >= 0; index--) {
-		const entry = path[index];
-		if (entry?.type !== "compaction") continue;
-		const keptIndex = path.findIndex((item) => item.id === entry.firstKeptEntryId);
-		startIndex = keptIndex >= 0 ? keptIndex : index + 1;
-		break;
+	if (entries.length === 0 || entries[entries.length - 1]?.type === "compaction") return false;
+	const projected = projectBranchEntries(entries);
+	let boundaryStart = 0;
+	for (let index = 0; index < projected.length; index++) {
+		const entry = projected[index];
+		if (entry && entry.sourceEntry.type === "compaction" && entry.messages.length > 0) {
+			boundaryStart = index + 1;
+			break;
+		}
 	}
-
-	const cut = findCutPoint(path, startIndex, path.length, keepRecentTokens);
+	const cut = findProjectedCutPoint(projected, boundaryStart, projected.length, keepRecentTokens);
+	const firstKept = projected[cut.firstKeptEntryIndex]?.sourceEntry;
+	if (!firstKept?.id) return false;
 	const historyEnd = cut.isSplitTurn ? cut.turnStartIndex : cut.firstKeptEntryIndex;
-	const historyMessages = historyEnd > startIndex ? compactionMessageCount(path, startIndex, historyEnd) : 0;
+	const historyMessages =
+		historyEnd > boundaryStart ? summarizableMessageCount(projected, boundaryStart, historyEnd) : 0;
 	const prefixMessages =
 		cut.isSplitTurn && cut.turnStartIndex >= 0
-			? compactionMessageCount(path, cut.turnStartIndex, cut.firstKeptEntryIndex)
+			? summarizableMessageCount(projected, cut.turnStartIndex, cut.firstKeptEntryIndex)
 			: 0;
 	return historyMessages > 0 || prefixMessages > 0;
 }
@@ -165,6 +323,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 		let activeDebt: CacheDebt | undefined;
 		let nextContinuation: PendingContinuation | undefined;
 		let compactionInFlight = false;
+		let benignSkipStreak = 0;
 
 		const releaseContinuation = (): void => {
 			const continuation = nextContinuation;
@@ -187,6 +346,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 			selected = undefined;
 			activeDebt = undefined;
 			compactionInFlight = false;
+			benignSkipStreak = 0;
 		};
 		const ensureRestored = (context: ExtensionContext): void => {
 			if (!restored) restore(context);
@@ -370,15 +530,24 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 					});
 				});
 				compactionInFlight = false;
+				const benignSkip = isBenignCompactionSkip(compactionError);
 				if (
 					compactionError &&
+					!benignSkip &&
 					compactionError.name !== "AbortError" &&
 					compactionError.message !== "Compaction cancelled"
 				) {
 					throw compactionError;
 				}
+				// A benign skip still owes the session a resume: the turn was aborted
+				// for a compaction that turned out to have nothing to do. Resume once;
+				// a consecutive skip leaves the session idle instead of looping.
+				benignSkipStreak = benignSkip ? benignSkipStreak + 1 : 0;
+				const resumeSkippedCompaction = benignSkip && benignSkipStreak <= 1;
 
-				if (compacted) {
+				if (compacted || resumeSkippedCompaction) {
+					if (compacted) benignSkipStreak = 0;
+					const continuationText = compacted ? POST_COMPACTION_PLAN_REMINDER : SKIPPED_COMPACTION_CONTINUATION;
 					let resolveContinuation!: () => void;
 					const continuation: PendingContinuation = {
 						promise: new Promise<void>((resolve) => {
@@ -391,7 +560,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 						pi.sendMessage(
 							{
 								customType: "sol-pi-online-context-compact",
-								content: POST_COMPACTION_PLAN_REMINDER,
+								content: continuationText,
 								display: false,
 							},
 							{ triggerTurn: true },
