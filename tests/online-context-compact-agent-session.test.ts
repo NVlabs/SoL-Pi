@@ -29,6 +29,9 @@ import {
 
 const OPEN = [{ id: "build", goal: "build it", status: "in_progress" }] as const;
 const DONE = [{ id: "build", goal: "build it", status: "completed" }] as const;
+// Same completed plan re-stated with a re-keyed id and a reworded goal: the
+// real-world post-compaction restatement that used to re-trigger compaction.
+const REKEYED = [{ id: "rebuild", goal: "build it (restated)", status: "completed" }] as const;
 const PROGRESS = {
 	files_changed: ["src/a.ts"],
 	verification: ["tests passed"],
@@ -165,7 +168,9 @@ async function runCompactionScenario(requestedCompactions: 1 | 2): Promise<void>
 	}
 }
 
-async function runIdenticalReissueScenario(): Promise<void> {
+async function runPostCompactionRestatementScenario(
+	reissued: readonly { readonly id: string; readonly goal: string; readonly status: "completed" }[],
+): Promise<void> {
 	const cwd = await mkdtemp(join(tmpdir(), "sol-pi-occ-reissue-"));
 	const agentDir = join(cwd, "agent");
 	await mkdir(agentDir);
@@ -186,10 +191,10 @@ async function runIdenticalReissueScenario(): Promise<void> {
 				fauxToolCall("update_plan", { steps: DONE, progress: PROGRESS }, { id: "plan-done" }),
 				{ stopReason: "toolUse" },
 			),
-			// Post-compaction reminder turn: the model re-issues the identical
-			// completed plan, which must not register as a new progress boundary
-			// and must not trigger a second compaction.
-			fauxAssistantMessage(fauxToolCall("update_plan", { steps: DONE }, { id: "plan-reissued" }), {
+			// Post-compaction reminder turn: the model re-states the completed
+			// plan. Even with re-keyed ids the restatement must not register as a
+			// new progress boundary and must not trigger a second compaction.
+			fauxAssistantMessage(fauxToolCall("update_plan", { steps: reissued }, { id: "plan-reissued" }), {
 				stopReason: "toolUse",
 			}),
 			async () => {
@@ -296,7 +301,11 @@ describe("Online Context Compact with a real AgentSession", () => {
 		await runCompactionScenario(2);
 	}, 10_000);
 
-	it("compacts once when the post-compaction reminder re-issues the identical plan", async () => {
-		await runIdenticalReissueScenario();
+	it("compacts once when the post-compaction reminder re-states the identical plan", async () => {
+		await runPostCompactionRestatementScenario(DONE);
+	}, 10_000);
+
+	it("compacts once when the post-compaction restatement re-keys the plan ids", async () => {
+		await runPostCompactionRestatementScenario(REKEYED);
 	}, 10_000);
 });
