@@ -402,11 +402,17 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 						throw error;
 					}
 					if (context.isIdle() && nextContinuation === continuation) {
+						// Pi 0.87.0 defers a run requested from an `agent_settled` handler until every
+						// settled handler has returned, and keeps `isIdle()` true in the meantime, so
+						// the requested turn legitimately has not started yet. The host owns that
+						// continuation: it awaits the deferred run before the settle notification
+						// finishes. Waiting on it here would deadlock, and reporting it as a failure
+						// raises a false "continuation did not start" error on every compaction.
 						nextContinuation = undefined;
 						continuation.resolve();
-						throw new Error("Online context compact continuation did not start");
+					} else {
+						await continuation.promise;
 					}
-					await continuation.promise;
 				}
 			} finally {
 				compactionInFlight = false;
