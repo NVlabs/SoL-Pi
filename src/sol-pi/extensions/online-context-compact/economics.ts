@@ -9,6 +9,8 @@ export type CompactionEconomics = {
 	readonly windowReserveTokens: number;
 	readonly firstCompactionRequestScale: number;
 	readonly subsequentCompactionMargin: number;
+	/** Minimum provider requests since the last compaction before economics may compact again. */
+	readonly minimumRequestsSinceCompaction: number;
 };
 
 export const DEFAULT_COMPACTION_ECONOMICS: CompactionEconomics = Object.freeze({
@@ -17,6 +19,7 @@ export const DEFAULT_COMPACTION_ECONOMICS: CompactionEconomics = Object.freeze({
 	windowReserveTokens: 16_384,
 	firstCompactionRequestScale: 2,
 	subsequentCompactionMargin: 1.5,
+	minimumRequestsSinceCompaction: 2,
 });
 
 export type CompactionReason =
@@ -25,6 +28,7 @@ export type CompactionReason =
 	| "deferred_economic"
 	| "deferred_subsequent_margin"
 	| "deferred_carried_debt"
+	| "deferred_post_compaction_cooldown"
 	| "horizon_unavailable"
 	| "cache_ratio_unavailable"
 	| "native_not_compactable"
@@ -58,6 +62,7 @@ export type CompactionDecision = {
 	readonly cacheWriteReadRatio: number | null;
 	readonly incrementalCacheCostRatio: number | null;
 	readonly priorCompactionCount: number;
+	readonly requestsSinceLastCompaction: number | null;
 	readonly carriedDebtTokens: number;
 	readonly cacheDebtRepaymentTokens: number;
 	readonly compact: boolean;
@@ -129,6 +134,8 @@ export function decideCompaction(input: {
 	readonly averageContextTokenIncrement: number | null;
 	readonly contextWindowTokens: number | null;
 	readonly priorCompactionCount: number;
+	/** Provider requests since the last compaction; null when never compacted. */
+	readonly requestsSinceLastCompaction?: number | null;
 	readonly carriedDebtTokens: number;
 	readonly cacheDebtRepaymentTokens: number;
 	readonly cacheWriteReadRatio: number | null;
@@ -193,7 +200,13 @@ export function decideCompaction(input: {
 		combinedBreakevenRequests <= horizon.expectedRemainingRequests;
 	const economic = firstCompaction ? firstEconomic : baseEconomic && subsequentMarginOpen && carriedDebtGateOpen;
 	const compressible = savingTokens > 0;
-	const compact = compressible && (windowProtection || economic);
+	const cooldownActive =
+		input.requestsSinceLastCompaction !== null &&
+		input.requestsSinceLastCompaction !== undefined &&
+		input.requestsSinceLastCompaction < input.economics.minimumRequestsSinceCompaction;
+	// Window protection stays absolute: near the context limit, compact even in cooldown.
+	const economicAllowed = economic && !cooldownActive;
+	const compact = compressible && (windowProtection || economicAllowed);
 
 	return {
 		writeTokens: input.writeTokens,
@@ -215,6 +228,7 @@ export function decideCompaction(input: {
 		cacheWriteReadRatio: input.cacheWriteReadRatio,
 		incrementalCacheCostRatio,
 		priorCompactionCount: input.priorCompactionCount,
+		requestsSinceLastCompaction: input.requestsSinceLastCompaction ?? null,
 		carriedDebtTokens: input.carriedDebtTokens,
 		cacheDebtRepaymentTokens: input.cacheDebtRepaymentTokens,
 		compact,
@@ -222,7 +236,9 @@ export function decideCompaction(input: {
 			? "non_positive_saving"
 			: windowProtection
 				? "window_protection"
-				: economic
+				: economic && cooldownActive
+					? "deferred_post_compaction_cooldown"
+					: economic
 					? "economic"
 					: horizon === null
 						? "horizon_unavailable"

@@ -13,6 +13,7 @@ import {
 	recordProviderRequest,
 	restoreOnlineState,
 } from "../src/sol-pi/extensions/online-context-compact/state.ts";
+import { analyzePlanTransition } from "../src/sol-pi/extensions/online-context-compact/plan.ts";
 import { FakePi, FakeSessionManager } from "./helpers.ts";
 
 const PLAN = [
@@ -35,8 +36,10 @@ describe("Online Context Compact state snapshots", () => {
 			version: 1,
 			epoch: 0,
 			plan: [],
+			awaitingPlanRestatement: false,
 			pendingProgress: [],
 			requestCount: 0,
+			lastCompactionRequestCount: null,
 			lastBoundaryRequestCount: 0,
 			completedBoundaryRequestCounts: [],
 			lastContextTokens: null,
@@ -97,11 +100,45 @@ describe("Online Context Compact state snapshots", () => {
 
 		expect(after).toMatchObject({
 			epoch: 1,
+			plan: PLAN,
+			awaitingPlanRestatement: true,
+			lastCompactionRequestCount: before.requestCount,
 			pendingProgress: [],
 			nativeCompactionCount: 1,
 			cacheDebtTokens: 1_200,
 			cacheDebtRepaymentTokens: 300,
 		});
+	});
+
+	it("arms the restatement flag again after a correction", () => {
+		const before = recordCompaction(
+			recordBoundary(recordProviderRequest(initialOnlineState(), 5_000), PLAN, PROGRESS),
+			{ debtTokens: 0, repaymentTokens: 0 },
+		);
+		const accepted = { ...before, awaitingPlanRestatement: false };
+		expect(recordCorrection(accepted)).toMatchObject({
+			awaitingPlanRestatement: true,
+			plan: [],
+		});
+	});
+
+	it("restores snapshots persisted before the restatement bookkeeping existed", () => {
+		const legacy = initialOnlineState();
+		const persisted = JSON.parse(JSON.stringify(legacy)) as Record<string, unknown>;
+		delete persisted.awaitingPlanRestatement;
+		delete persisted.lastCompactionRequestCount;
+
+		const manager = new FakeSessionManager();
+		manager.appendCustomEntry(ONLINE_STATE_ENTRY, persisted);
+
+		expect(restoreOnlineState(manager.entries)).toEqual(legacy);
+	});
+
+	it("does not treat a plan re-issued after compaction as new progress", () => {
+		const before = recordBoundary(recordProviderRequest(initialOnlineState(), 5_000), PLAN, PROGRESS);
+		const after = recordCompaction(before, { debtTokens: 0, repaymentTokens: 0 });
+
+		expect(analyzePlanTransition(after.plan, PLAN).completedSteps).toEqual([]);
 	});
 
 	it("drops stale plan history when the user corrects an active run", () => {

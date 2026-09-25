@@ -207,12 +207,17 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 				if (!steps || steps.length === 0) throw new Error("Plan must contain at least one valid step");
 
 				const transition = analyzePlanTransition(state.plan, steps);
-				const completedIds = transition.completedSteps.map((step) => step.id);
+				const restatement = state.awaitingPlanRestatement;
+				// The first plan after a compaction or correction re-states the
+				// current plan (the reminder asks for it). The model may re-key
+				// step ids while re-stating, so completed steps in that call are
+				// never fresh progress and must not arm another compaction.
+				const completedIds = restatement ? [] : transition.completedSteps.map((step) => step.id);
 				if (completedIds.length > 0) {
 					state = recordBoundary(state, steps, progressSummary(input, completedIds[0] ?? ""));
 					if (!pendingBoundary) pendingBoundary = { toolCallId: input.toolCallId };
-				} else if (JSON.stringify(state.plan) !== JSON.stringify(steps)) {
-					state = { ...state, plan: [...steps] };
+				} else {
+					state = { ...state, plan: [...steps], awaitingPlanRestatement: false };
 				}
 				save();
 
@@ -220,6 +225,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 					[formatPlanSnapshot(steps), ...transition.advice].join("\n"),
 					{
 						boundary: completedIds.length > 0,
+						restatement,
 						completed_step_ids: completedIds,
 						progress_recorded: completedIds.length > 0 && input.progress !== undefined,
 						task_status: "active",
@@ -296,6 +302,10 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 				averageContextTokenIncrement,
 				contextWindowTokens,
 				priorCompactionCount: state.nativeCompactionCount,
+				requestsSinceLastCompaction:
+					state.lastCompactionRequestCount === null
+						? null
+						: state.requestCount - state.lastCompactionRequestCount,
 				carriedDebtTokens: state.cacheDebtTokens,
 				cacheDebtRepaymentTokens: state.cacheDebtRepaymentTokens,
 				cacheWriteReadRatio,
