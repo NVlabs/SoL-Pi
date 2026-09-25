@@ -1,6 +1,6 @@
 # Pi Compatibility
 
-SoL-Pi is developed and tested against `@earendil-works/pi-coding-agent` 0.85.1 and remains compatible with the originally supported 0.84.2 release. The current 19 test files (140 tests), type checking, package inspection, public API checks, and offline extension startup passed on both releases. Previous checks covered the public API surface of Pi 0.81.1, the base used by the original Pi fork; they are not a current full-suite compatibility guarantee. The runtime range is deliberately expressed as a peer dependency because Pi owns installation and upgrade of its packages; it is not a guarantee for every Pi version.
+SoL-Pi is developed and tested against `@earendil-works/pi-coding-agent` 0.85.1 and remains compatible with the originally supported 0.84.2 release. The Online Context Compact feasibility check additionally mirrors the projected compaction preparation introduced in Pi 0.87 (see below); it was differentially verified against Pi 0.87.1's `prepareCompaction` over recorded sessions and randomized branches. The current 19 test files (160 tests), type checking, package inspection, public API checks, and offline extension startup passed on the supported releases. Previous checks covered the public API surface of Pi 0.81.1, the base used by the original Pi fork; they are not a current full-suite compatibility guarantee. The runtime range is deliberately expressed as a peer dependency because Pi owns installation and upgrade of its packages; it is not a guarantee for every Pi version.
 
 SoL-Pi imports only public package exports:
 
@@ -38,6 +38,8 @@ The unpublished shared artifact layout is not read or migrated. Each session sta
 ## Online Context Compact
 
 Online Context Compact uses ordinary public `context` and `before_provider_request` handlers instead of fork-only post-transform observer methods. Public handlers run in extension load order, so the SoL-Pi entrypoint registers Online Context Compact after its other context transformers. A third-party transformer loaded later is outside the context-growth observation used by its estimate.
+
+Before aborting a turn for a boundary compaction, the extension predicts whether Pi's native `AgentSession.compact()` will accept the session. Pi 0.87 changed that preparation from raw-entry cut-point counting to a projected window that filters system prompt state, drops interior compaction entries, and applies context-edit omissions. The check mirrors the projected semantics through the public `buildContextEntries`, `sessionEntryToContextMessages`, and `estimateTokens` exports, so it stays a prediction on both the pre-0.87 and 0.87+ algorithms and never aborts a turn for a compaction Pi would refuse with "Nothing to compact (session too small)". If a refusal still occurs (for example after an unrecognized future Pi change), the extension treats it as a benign skip, resumes the parent task once, and stops resuming on a repeated skip instead of surfacing an extension error.
 
 Pi does not expose its active retained-tail compaction setting through the public extension context. The standalone extension therefore uses the Pi 0.85.1 default of 20,000 tokens for its economic estimate. Its programmatic factory accepts an explicit matching value for a non-default Pi setting.
 

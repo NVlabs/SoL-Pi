@@ -20,6 +20,7 @@ export {
 	DEFAULT_KEEP_RECENT_TOKENS,
 	DEFAULT_NATIVE_SUMMARY_TOKEN_ESTIMATE,
 	POST_COMPACTION_PLAN_REMINDER,
+	SKIPPED_COMPACTION_CONTINUATION,
 	type OnlineContextCompactOptions,
 	resolveKeepRecentTokens,
 } from "./extension.ts";
