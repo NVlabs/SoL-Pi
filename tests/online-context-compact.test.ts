@@ -209,6 +209,119 @@ describe("Online Context Compact extension", () => {
 		expect(await pi.emit("session_before_tree", { type: "session_before_tree" }, context)).toBeUndefined();
 		expect(restoreOnlineState(manager.entries)).toMatchObject({ nativeCompactionCount: 1, pendingProgress: [] });
 	});
+
+	it(
+		"hands the continuation to a host that defers runs requested from agent_settled",
+		async () => {
+			// Pi 0.87.0 defers a run requested from an `agent_settled` handler until every settled
+			// handler has returned, and keeps `ctx.isIdle()` true meanwhile, so the requested turn
+			// legitimately has not started when `sendMessage` returns. The handler must return
+			// cleanly and leave that run with the host rather than reporting a false failure.
+			const manager = new FakeSessionManager();
+			manager.appendMessage({ role: "user", content: `old ${"x".repeat(2_000)}`, timestamp: Date.now() });
+			manager.appendMessage(assistant(`work ${"y".repeat(2_000)}`));
+			const pi = new FakePi(manager);
+			createOnlineContextCompactExtension({ cacheWriteReadRatio: 12.5, keepRecentTokens: 1 })(pi.asExtensionApi());
+			const idle = true;
+			const sendMessage = pi.sendMessage.bind(pi);
+			vi.spyOn(pi, "sendMessage").mockImplementation((message, options) => {
+				// A deferring host queues the requested run and starts it only after this handler and
+				// every other settled handler have returned, so `idle` stays true here.
+				sendMessage(message, options);
+			});
+			const abort = vi.fn();
+			const compactCalls: CompactOptions[] = [];
+			let finishCompaction!: () => void;
+			const compactionGate = new Promise<void>((resolve) => {
+				finishCompaction = resolve;
+			});
+			let context: ExtensionContext;
+			const compact = (options: CompactOptions = {}): void => {
+				compactCalls.push(options);
+				void compactionGate
+					.then(() =>
+						pi.emit(
+							"session_compact",
+							{
+								type: "session_compact",
+								fromExtension: false,
+								reason: "manual",
+								willRetry: false,
+								compactionEntry: {
+									type: "compaction",
+									id: "compact-1",
+									parentId: manager.getLeafId(),
+									timestamp: new Date().toISOString(),
+									summary: "summary",
+									firstKeptEntryId: manager.entries.at(-1)?.id ?? "message-1",
+									tokensBefore: 195_000,
+								},
+							},
+							context,
+						),
+					)
+					.then(() =>
+						options.onComplete?.({
+							summary: "summary",
+							firstKeptEntryId: manager.entries.at(-1)?.id ?? "message-1",
+							tokensBefore: 195_000,
+						}),
+					);
+			};
+			context = fakeContext(manager, {
+				abort,
+				compact,
+				isIdle: () => idle,
+				getSystemPrompt: () => "test prompt",
+				getContextUsage: () => ({ tokens: 195_000, contextWindow: 200_000, percent: 97.5 }),
+			});
+
+			await pi.emit("session_start", { type: "session_start" }, context);
+			await pi.emitContext(buildSessionMessages(), context);
+			await pi.emit("before_provider_request", { type: "before_provider_request", payload: {} }, context);
+			await runPlan(pi, context, "plan-open", { steps: OPEN });
+			await runPlan(pi, context, "plan-done", { steps: DONE, progress: PROGRESS });
+			await pi.emit(
+				"turn_end",
+				{
+					type: "turn_end",
+					turnIndex: 1,
+					message: assistant("boundary"),
+					toolResults: [
+						{
+							role: "toolResult",
+							toolCallId: "plan-done",
+							toolName: "update_plan",
+							content: [{ type: "text", text: "done" }],
+							isError: false,
+							timestamp: Date.now(),
+						},
+					],
+				},
+				context,
+			);
+
+			const settlement = pi.emit("agent_settled", { type: "agent_settled" }, context);
+			await vi.waitFor(() => expect(compactCalls).toHaveLength(1));
+			finishCompaction();
+			await vi.waitFor(() => expect(pi.sentMessages).toHaveLength(1));
+
+			// Resolving proves the handler neither raised the false continuation error nor blocked
+			// waiting for a turn that the host owns.
+			await expect(settlement).resolves.toBeUndefined();
+			expect(pi.sentMessages).toEqual([
+				{
+					message: {
+						customType: "sol-pi-online-context-compact",
+						content: POST_COMPACTION_PLAN_REMINDER,
+						display: false,
+					},
+					options: { triggerTurn: true },
+				},
+			]);
+		},
+		10_000,
+	);
 });
 
 function buildSessionMessages(): AgentMessage[] {
