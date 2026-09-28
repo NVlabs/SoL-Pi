@@ -145,6 +145,13 @@ async function runCompactionScenario(requestedCompactions: 1 | 2): Promise<void>
 		);
 		const branch = sessionManager.getBranch();
 		expect(branch.filter((entry) => entry.type === "compaction")).toHaveLength(requestedCompactions);
+		const stops = branch.flatMap((entry) =>
+			entry.type === "message" && entry.message.role === "assistant"
+				? [{ stopReason: entry.message.stopReason, errorMessage: entry.message.errorMessage }]
+				: [],
+		);
+		// the extension's own pause is neither a failure nor an abort
+		expect(stops.filter((stop) => stop.stopReason === "error" || stop.stopReason === "aborted")).toEqual([]);
 		expect(
 			branch.filter(
 				(entry) =>

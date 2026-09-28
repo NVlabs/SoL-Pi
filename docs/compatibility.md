@@ -47,6 +47,8 @@ A settlement barrier keeps the original `agent_settled` dispatch open until the 
 
 Pi 0.85.1 does not return a promise from `ExtensionAPI.sendMessage()`. The barrier is therefore verified for standalone SoL-Pi and depends on Pi starting the requested turn synchronously. A later-loaded third-party extension that performs long asynchronous work in its own `agent_settled` handler is outside this guarantee and needs an integration test with that extension set.
 
+Pi 0.87.0 changed that contract: a run requested from an `agent_settled` handler is deferred until every settled handler has returned, and handlers keep observing `ctx.isIdle() === true` while it is queued. The extension therefore treats an idle context after `sendMessage()` as a deferred continuation it must hand back to the host rather than as a failure: it returns without waiting, and Pi starts and awaits that run itself after the settled handlers finish. Waiting there would deadlock, because the deferred run cannot start until the handler returns. Both host contracts are covered by `tests/online-context-compact.test.ts`.
+
 Pi reports the session as idle while an extension-requested manual compaction is running. SoL-Pi cancels `session_before_tree` during that interval to prevent tree navigation from moving the active leaf underneath the compaction. Navigation works normally after the compaction callback settles.
 
 Online Context Compact reads `ExtensionContext.getContextUsage()` for both the context window and the provider-counted context size. When Pi reports no size — as it does between a compaction and the next answered request — the boundary falls back to its own estimate.

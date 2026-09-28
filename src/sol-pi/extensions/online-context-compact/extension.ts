@@ -165,6 +165,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 		let activeDebt: CacheDebt | undefined;
 		let nextContinuation: PendingContinuation | undefined;
 		let compactionInFlight = false;
+		let pausing = false;
 
 		const releaseContinuation = (): void => {
 			const continuation = nextContinuation;
@@ -179,6 +180,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 			releaseContinuation();
 			state = restoreOnlineState(context.sessionManager.getBranch());
 			restored = true;
+			pausing = false;
 			observedMessages = buildSessionContext(
 				context.sessionManager.getEntries(),
 				context.sessionManager.getLeafId(),
@@ -235,7 +237,12 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 
 		pi.on("context", (event, context) => {
 			ensureRestored(context);
-			observedMessages = [...event.messages];
+			// An empty assistant message is a paused turn; providers reject empty assistant content.
+			const messages = event.messages.filter(
+				(message) => !(message.role === "assistant" && message.content.length === 0),
+			);
+			observedMessages = messages;
+			if (messages.length !== event.messages.length) return { messages };
 		});
 
 		pi.on("before_provider_request", (_event, context) => {
@@ -308,10 +315,23 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 			if (!decision.compact) return;
 
 			selected = { decision };
+			pausing = true;
 			context.abort();
 		});
 
+		// The pause above ends the run through the abort signal. The request that meets the signal
+		// yields an empty assistant message marked error/aborted, which Pi shows as a failure. It is the
+		// extension's own pause, so it ends the turn as an empty stop instead.
+		pi.on("message_end", (event) => {
+			const message = event.message;
+			if (!pausing || message.role !== "assistant" || message.content.length > 0) return;
+			if (message.stopReason !== "error" && message.stopReason !== "aborted") return;
+			const { errorMessage: _dropped, ...rest } = message;
+			return { message: { ...rest, stopReason: "stop" as const } };
+		});
+
 		pi.on("agent_settled", async (_event, context) => {
+			pausing = false;
 			// sendMessage() starts a turn without returning its promise. Capture the
 			// child settlement so print/JSON mode cannot dispose while it is running.
 			const parentContinuation = nextContinuation;
@@ -402,11 +422,17 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 						throw error;
 					}
 					if (context.isIdle() && nextContinuation === continuation) {
+						// Pi 0.87.0 defers a run requested from an `agent_settled` handler until every
+						// settled handler has returned, and keeps `isIdle()` true in the meantime, so
+						// the requested turn legitimately has not started yet. The host owns that
+						// continuation: it awaits the deferred run before the settle notification
+						// finishes. Waiting on it here would deadlock, and reporting it as a failure
+						// raises a false "continuation did not start" error on every compaction.
 						nextContinuation = undefined;
 						continuation.resolve();
-						throw new Error("Online context compact continuation did not start");
+					} else {
+						await continuation.promise;
 					}
-					await continuation.promise;
 				}
 			} finally {
 				compactionInFlight = false;
