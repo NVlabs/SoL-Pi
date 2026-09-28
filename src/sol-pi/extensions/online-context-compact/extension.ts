@@ -237,7 +237,12 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 
 		pi.on("context", (event, context) => {
 			ensureRestored(context);
-			observedMessages = [...event.messages];
+			// An empty assistant message is a paused turn; providers reject empty assistant content.
+			const messages = event.messages.filter(
+				(message) => !(message.role === "assistant" && message.content.length === 0),
+			);
+			observedMessages = messages;
+			if (messages.length !== event.messages.length) return { messages };
 		});
 
 		pi.on("before_provider_request", (_event, context) => {
@@ -314,12 +319,15 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 			context.abort();
 		});
 
-		// The pause above ends the run through the abort signal, which Pi records as an assistant error.
+		// The pause above ends the run through the abort signal. The request that meets the signal
+		// yields an empty assistant message marked error/aborted, which Pi shows as a failure. It is the
+		// extension's own pause, so it ends the turn as an empty stop instead.
 		pi.on("message_end", (event) => {
 			const message = event.message;
-			if (!pausing || message.role !== "assistant" || message.stopReason !== "error") return;
-			if (!/aborted/i.test(message.errorMessage ?? "")) return;
-			return { message: { ...message, stopReason: "aborted" as const, errorMessage: "Paused to compact context" } };
+			if (!pausing || message.role !== "assistant" || message.content.length > 0) return;
+			if (message.stopReason !== "error" && message.stopReason !== "aborted") return;
+			const { errorMessage: _dropped, ...rest } = message;
+			return { message: { ...rest, stopReason: "stop" as const } };
 		});
 
 		pi.on("agent_settled", async (_event, context) => {
