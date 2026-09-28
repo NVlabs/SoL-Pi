@@ -23,11 +23,12 @@ The project file replaces the global file. SoL-Pi does not merge them.
   "evidencePreservingReducerProvider": "provider-id",
   "evidencePreservingReducerModel": "model-id",
   "onlineContextCompact": false,
+  "observationPackFullSends": 2,
   "cacheWriteReadRatio": 12.5
 }
 ```
 
-Feature keys may be omitted and then default to `false`. `cacheWriteReadRatio` may be omitted and then defaults to `12.5`; when present it must be a finite non-negative number, and `0` explicitly means that a cache write adds no cost relative to a cache read. `evidencePreservingReducerProvider` and `evidencePreservingReducerModel` may be omitted and then use the built-in reducer route; when present each must be a non-empty string. Unknown keys, unsupported versions, malformed JSON, non-boolean feature values, invalid ratios, and invalid reducer model fields stop extension loading with a direct error.
+Feature keys may be omitted and then default to `false`. `observationPackFullSends` may be omitted and then defaults to `2`; when present it must be a non-negative integer. `cacheWriteReadRatio` may be omitted and then defaults to `12.5`; when present it must be a finite non-negative number, and `0` explicitly means that a cache write adds no cost relative to a cache read. `evidencePreservingReducerProvider` and `evidencePreservingReducerModel` may be omitted and then use the built-in reducer route; when present each must be a non-empty string. Unknown keys, unsupported versions, malformed JSON, non-boolean feature values, invalid full-send counts, invalid ratios, and invalid reducer model fields stop extension loading with a direct error.
 
 For the managed all-enabled installation described in the [agent installation and configuration protocol](../agents-install.md), validate the effective file before starting Pi:
 
@@ -43,11 +44,27 @@ This preflight does not make every valid SoL-Pi configuration all-enabled. Witho
 
 - `actionFusion`: registers SoL-Pi replacements for Pi's `edit` and `write` tools.
 - `observationPack`: registers `obs_recall` and a provider-context projection handler.
+- `observationPackFullSends`: selects how many provider requests still carry a large tool result in full; see [observationPackFullSends](#observationpackfullsends).
 - `evidencePreservingReducer`: registers a `tool_result` handler and delegates long diagnostic-log reduction to the configured reducer provider/model.
 - `evidencePreservingReducerProvider`: provider namespace used to resolve the reducer model through Pi's model registry.
 - `evidencePreservingReducerModel`: model id used for Evidence-Preserving Reducer.
 - `onlineContextCompact`: registers `update_plan` and boundary-driven native compaction after the other SoL-Pi context transformers.
 - `cacheWriteReadRatio`: supplies the single economic decision ratio used by Online Context Compact.
+
+## observationPackFullSends
+
+The Observation Pack projection sends a tool result larger than 10 KB in full for its first `observationPackFullSends` provider requests and then replaces it with a short placeholder for every later request. The default is `2`.
+
+The first replacement changes a message that has already participated in a provider request, so every prompt-cache prefix from that point onward is invalidated and re-billed at the provider's non-cached input rate. The replacement is not free even though it shrinks the context: it trades a one-time re-bill of the remaining context against keeping those tokens in context for the rest of the session.
+
+Set `0` when the provider bills prompt caching and the context is large. The placeholder is then projected from the very first request, so the projected message never changes after it has been sent and no cached prefix is invalidated. The observation stays archived and `obs_recall` still returns the original bytes; the model simply never sees the raw payload inside the provider context.
+
+Local measurements from one user-wide install with a 400k-500k token context on an OpenAI-compatible gateway, taken over 61 sessions and 215-1580 provider requests each:
+
+- 329 packed observations produced 325 first-time replacements. One measured request re-billed 379k of a 475k-token prompt at the non-cached rate while only a 96.4k prefix stayed cached; the replacement was the only change to the outgoing history at that point.
+- On that install the rewrites cost more than they saved, because the tail being re-billed (200k+ tokens) was far larger than the payload being removed (6k-30k tokens) and the prompt cache reported only a 10-12x read/paid price ratio.
+
+Keep the default when the provider has no prefix cache, when the context is small, or when the agent must see the raw payload. The mechanism is unchanged either way: it still writes one archive object per observation and still fails open.
 
 ## Evidence-Preserving Reducer runtime inputs
 

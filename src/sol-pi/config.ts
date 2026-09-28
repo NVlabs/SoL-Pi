@@ -10,13 +10,16 @@ import {
 	DEFAULT_REDUCER_MODEL,
 	DEFAULT_REDUCER_PROVIDER,
 } from "./extensions/evidence-preserving-reducer/config.ts";
+import { FULL_SENDS } from "./extensions/observation-pack/observation.ts";
 
 export const DEFAULT_CACHE_WRITE_READ_RATIO = 12.5;
+export const DEFAULT_OBSERVATION_PACK_FULL_SENDS = FULL_SENDS;
 
 export interface SolPiConfig {
 	readonly version: 1;
 	readonly actionFusion: boolean;
 	readonly observationPack: boolean;
+	readonly observationPackFullSends: number;
 	readonly evidencePreservingReducer: boolean;
 	readonly evidencePreservingReducerModel: string;
 	readonly evidencePreservingReducerProvider: string;
@@ -28,6 +31,7 @@ export const DEFAULT_CONFIG: SolPiConfig = Object.freeze({
 	version: 1,
 	actionFusion: false,
 	observationPack: false,
+	observationPackFullSends: DEFAULT_OBSERVATION_PACK_FULL_SENDS,
 	evidencePreservingReducer: false,
 	evidencePreservingReducerModel: DEFAULT_REDUCER_MODEL,
 	evidencePreservingReducerProvider: DEFAULT_REDUCER_PROVIDER,
@@ -42,7 +46,13 @@ const FEATURE_KEYS = [
 	"onlineContextCompact",
 ] as const;
 const STRING_KEYS = ["evidencePreservingReducerModel", "evidencePreservingReducerProvider"] as const;
-const CONFIG_KEYS = new Set<string>(["version", ...FEATURE_KEYS, ...STRING_KEYS, "cacheWriteReadRatio"]);
+const CONFIG_KEYS = new Set<string>([
+	"version",
+	...FEATURE_KEYS,
+	...STRING_KEYS,
+	"cacheWriteReadRatio",
+	"observationPackFullSends",
+]);
 
 export function findConfigPath(
 	cwd = process.cwd(),
@@ -99,6 +109,16 @@ export function loadSolPiConfig(
 	) {
 		throw new Error(`SoL-Pi config cacheWriteReadRatio must be a finite non-negative number: ${path}`);
 	}
+	const observationPackFullSends = Object.hasOwn(record, "observationPackFullSends")
+		? record.observationPackFullSends
+		: DEFAULT_OBSERVATION_PACK_FULL_SENDS;
+	if (
+		typeof observationPackFullSends !== "number" ||
+		!Number.isInteger(observationPackFullSends) ||
+		observationPackFullSends < 0
+	) {
+		throw new Error(`SoL-Pi config observationPackFullSends must be a non-negative integer: ${path}`);
+	}
 	const evidencePreservingReducerModel = stringConfigValue(
 		record,
 		"evidencePreservingReducerModel",
@@ -116,6 +136,7 @@ export function loadSolPiConfig(
 		...DEFAULT_CONFIG,
 		...record,
 		cacheWriteReadRatio,
+		observationPackFullSends,
 		evidencePreservingReducerModel,
 		evidencePreservingReducerProvider,
 	}) as SolPiConfig;
