@@ -65,6 +65,7 @@ describe("Online Context Compact extension", () => {
 			"before_provider_request",
 			"context",
 			"input",
+			"message_end",
 			"session_before_tree",
 			"session_compact",
 			"session_shutdown",

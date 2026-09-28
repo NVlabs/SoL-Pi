@@ -165,6 +165,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 		let activeDebt: CacheDebt | undefined;
 		let nextContinuation: PendingContinuation | undefined;
 		let compactionInFlight = false;
+		let pausing = false;
 
 		const releaseContinuation = (): void => {
 			const continuation = nextContinuation;
@@ -179,6 +180,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 			releaseContinuation();
 			state = restoreOnlineState(context.sessionManager.getBranch());
 			restored = true;
+			pausing = false;
 			observedMessages = buildSessionContext(
 				context.sessionManager.getEntries(),
 				context.sessionManager.getLeafId(),
@@ -308,10 +310,20 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 			if (!decision.compact) return;
 
 			selected = { decision };
+			pausing = true;
 			context.abort();
 		});
 
+		// The pause above ends the run through the abort signal, which Pi records as an assistant error.
+		pi.on("message_end", (event) => {
+			const message = event.message;
+			if (!pausing || message.role !== "assistant" || message.stopReason !== "error") return;
+			if (!/aborted/i.test(message.errorMessage ?? "")) return;
+			return { message: { ...message, stopReason: "aborted" as const, errorMessage: "Paused to compact context" } };
+		});
+
 		pi.on("agent_settled", async (_event, context) => {
+			pausing = false;
 			// sendMessage() starts a turn without returning its promise. Capture the
 			// child settlement so print/JSON mode cannot dispose while it is running.
 			const parentContinuation = nextContinuation;
