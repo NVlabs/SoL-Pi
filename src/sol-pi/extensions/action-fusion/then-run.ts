@@ -30,6 +30,8 @@ export function createThenRunSchema(description: string) {
 	);
 }
 
+export type ThenRunBashFactory = typeof createBashToolDefinition;
+
 function errorText(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
@@ -81,6 +83,7 @@ export async function executeMutationThenRun<TDetails>({
 	thenRun,
 	mutate,
 	bashOptions,
+	createBash = createBashToolDefinition,
 	signal,
 	ctx,
 }: {
@@ -89,6 +92,7 @@ export async function executeMutationThenRun<TDetails>({
 	thenRun: ThenRunInput | undefined;
 	mutate: () => Promise<AgentToolResult<TDetails>>;
 	bashOptions: BashToolOptions | undefined;
+	createBash?: ThenRunBashFactory;
 	signal: AbortSignal | undefined;
 	ctx: ExtensionContext;
 }): Promise<AgentToolResult<TDetails>> {
@@ -108,7 +112,7 @@ export async function executeMutationThenRun<TDetails>({
 		}
 
 		await assertUnchangedBeforeCommand(absolutePath);
-		const bash = createBashToolDefinition(ctx.cwd, bashOptions);
+		const bash = createBash(ctx.cwd, bashOptions);
 		try {
 			const bashResult = await bash.execute(`${toolCallId}:then_run`, thenRun, signal, undefined, ctx);
 			const output = resultText(bashResult);

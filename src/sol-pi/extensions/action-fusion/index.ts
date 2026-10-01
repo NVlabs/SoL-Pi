@@ -21,10 +21,13 @@ import {
 	type BashToolOptions,
 	createEditToolDefinition,
 	createWriteToolDefinition,
+	getAgentDir,
 	type EditToolDetails,
 	type EditToolOptions,
 	type ExtensionAPI,
+	type ExtensionContext,
 	type ExtensionFactory,
+	SettingsManager,
 	type WriteToolOptions,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -34,6 +37,7 @@ import {
 	createThenRunSchema,
 	executeMutationThenRun,
 	THEN_RUN_SUCCEEDED,
+	type ThenRunBashFactory,
 	type ThenRunInput,
 } from "./then-run.ts";
 
@@ -41,10 +45,21 @@ const EDIT_THEN_RUN_DESCRIPTION =
 	"Command to run next on this file after the edit succeeds — e.g. run, build, start/restart, install, or check it; optional timeout in seconds. Skipped if the edit fails; a non-zero exit is reported but keeps the edit.";
 const WRITE_THEN_RUN_DESCRIPTION =
 	"Command to run next on this file after the write succeeds — e.g. run, build, start/restart, install, or check it; optional timeout in seconds. Skipped if the write fails; a non-zero exit is reported but keeps the write.";
+type ShellPathLoader = (ctx: ExtensionContext) => string | undefined;
+
+function loadConfiguredShellPath(ctx: ExtensionContext): string | undefined {
+	return SettingsManager.create(ctx.cwd, getAgentDir(), {
+		projectTrusted: ctx.isProjectTrusted?.() ?? false,
+	}).getShellPath();
+}
 
 export interface ActionFusionOptions {
 	/** Optional programmatic bash overrides, primarily for tests and embedded runtimes. */
 	readonly bashOptions?: BashToolOptions;
+	/** Overrides settings lookup for embedded runtimes and tests. */
+	readonly loadShellPath?: ShellPathLoader;
+	/** Overrides the public Pi bash definition factory for embedded runtimes and tests. */
+	readonly createBashToolDefinition?: ThenRunBashFactory;
 	/** Overrides for the underlying built-in `edit` tool. */
 	readonly editOptions?: EditToolOptions;
 	/** Overrides for the underlying built-in `write` tool. */
@@ -69,6 +84,17 @@ function memoizeByCwd<T>(create: (cwd: string) => T): (cwd: string) => T {
 export function createActionFusionExtension(options: ActionFusionOptions = {}): ExtensionFactory {
 	const baseEdit = memoizeByCwd((cwd: string) => createEditToolDefinition(cwd, options.editOptions));
 	const baseWrite = memoizeByCwd((cwd: string) => createWriteToolDefinition(cwd, options.writeOptions));
+	const loadShellPath = options.loadShellPath ?? loadConfiguredShellPath;
+	const configuredBashOptions = new Map<string, BashToolOptions>();
+	const bashOptions = (ctx: ExtensionContext): BashToolOptions => {
+		if (options.bashOptions !== undefined) return options.bashOptions;
+		const cacheKey = `${ctx.cwd}\0${ctx.isProjectTrusted?.() ?? false}`;
+		const cached = configuredBashOptions.get(cacheKey);
+		if (cached) return cached;
+		const resolved = { shellPath: loadShellPath(ctx) };
+		configuredBashOptions.set(cacheKey, resolved);
+		return resolved;
+	};
 
 	return (pi: ExtensionAPI) => {
 		const editTemplate = baseEdit(process.cwd());
@@ -92,8 +118,9 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 					toolCallId,
 					absolutePath: resolveToolPath(ctx.cwd, input.path),
 					thenRun: then_run,
-					bashOptions: options.bashOptions,
+					bashOptions: bashOptions(ctx),
 					signal,
+					createBash: options.createBashToolDefinition,
 					ctx,
 					mutate: () => baseEdit(ctx.cwd).execute(toolCallId, editInput, signal, onUpdate, ctx),
 				});
@@ -126,9 +153,10 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 					toolCallId,
 					absolutePath: resolveToolPath(ctx.cwd, input.path),
 					thenRun: then_run,
-					bashOptions: options.bashOptions,
+					bashOptions: bashOptions(ctx),
 					signal,
 					ctx,
+					createBash: options.createBashToolDefinition,
 					mutate: () => baseWrite(ctx.cwd).execute(toolCallId, writeInput, signal, onUpdate, ctx),
 				});
 				if (
