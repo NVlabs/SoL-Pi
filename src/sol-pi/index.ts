@@ -12,7 +12,7 @@ import { registerOnlineContextCompact } from "./extensions/online-context-compac
 
 export function registerConfiguredFeatures(pi: ExtensionAPI, config: SolPiConfig): void {
 	if (config.actionFusion) registerActionFusion(pi);
-	if (config.observationPack) registerObservationPack(pi);
+	if (config.observationPack) registerObservationPack(pi, { fullSends: config.observationPackFullSends });
 	if (config.evidencePreservingReducer) {
 		registerEvidencePreservingReducer(pi, {
 			reducerModel: config.evidencePreservingReducerModel,

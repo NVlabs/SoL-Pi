@@ -5,10 +5,18 @@
 /**
  * ObservationPack - keep large tool results reachable without replaying them.
  *
- * A large tool result is sent in full for its first few provider requests, then
- * replaced with a short, stable placeholder for every later request. The
- * original bytes are archived by observation id outside the provider context,
+ * A large tool result is sent in full for its first `fullSends` provider requests
+ * and then replaced with a short, stable placeholder for every later request.
+ * The original bytes are archived by observation id outside the provider context,
  * and the agent pulls exact pages back with the registered `obs_recall` tool.
+ *
+ * `observationPackFullSends` in `sol-pi.json` selects the count (default 2).
+ * Every later request is unaffected: once an observation has been replaced, the
+ * projection for it is byte-identical for the rest of the session. Only the first
+ * replacement changes a message that already participated in a request, and that
+ * is what invalidates a provider prompt-cache prefix from that point onward. Set
+ * the count to 0 to project the placeholder from the first request, which trades
+ * the model seeing the raw payload for a prefix that never changes.
  *
  * The mechanism never edits history in place. It rewrites only at the
  * projection layer (`pi.on("context")`), so the stored session stays intact and
@@ -48,8 +56,23 @@ const RECALL_LIMITS = {
 	maxLines: RECALL_MAX_LINES - RECALL_HEADER_LINES,
 };
 
-export function createObservationPackExtension(): ExtensionFactory {
+export interface ObservationPackOptions {
+	/**
+	 * Provider requests that still carry the full payload. Defaults to
+	 * `FULL_SENDS` (2). `0` projects the placeholder from the first request, so a
+	 * message never changes after it has been sent and the provider prompt-cache
+	 * prefix stays valid. Values that are not a non-negative integer fall back to
+	 * the default.
+	 */
+	readonly fullSends?: number;
+}
+
+export function createObservationPackExtension(options: ObservationPackOptions = {}): ExtensionFactory {
 	return (pi: ExtensionAPI) => {
+		const fullSends =
+			typeof options.fullSends === "number" && Number.isInteger(options.fullSends) && options.fullSends >= 0
+				? options.fullSends
+				: FULL_SENDS;
 		const sentCounts = new Map<string, number>();
 		const ledgers = new Map<string, Ledger>();
 		const ledgerFor = (ctx: ExtensionContext): Ledger => {
@@ -159,7 +182,7 @@ export function createObservationPackExtension(): ExtensionFactory {
 
 					const sendCountKey = `${root}\0${observation.id}`;
 					const previousSends = sentCounts.get(sendCountKey) ?? priorAssistantCounts[index] ?? 0;
-					if (previousSends < FULL_SENDS) {
+					if (previousSends < fullSends) {
 						await ledgerFor(ctx)({
 							event: "full",
 							id: observation.id,
@@ -174,7 +197,7 @@ export function createObservationPackExtension(): ExtensionFactory {
 						continue;
 					}
 
-					const placeholder = placeholderFor(observation);
+					const placeholder = placeholderFor(observation, fullSends);
 					const placeholderTokens = estimateTokens(placeholder);
 					const removedTokens = Math.max(0, observation.tokens - placeholderTokens);
 					await ledgerFor(ctx)({
@@ -190,7 +213,7 @@ export function createObservationPackExtension(): ExtensionFactory {
 						placeholderTokens,
 						removedTokens,
 					});
-					if (previousSends === FULL_SENDS) {
+					if (previousSends === fullSends) {
 						showSolPiSavings(
 							ctx,
 							"Observation Pack",
@@ -220,8 +243,8 @@ export {
 	THRESHOLD_BYTES,
 } from "./observation.ts";
 
-export function registerObservationPack(pi: ExtensionAPI): void {
-	createObservationPackExtension()(pi);
+export function registerObservationPack(pi: ExtensionAPI, options: ObservationPackOptions = {}): void {
+	createObservationPackExtension(options)(pi);
 }
 
 export default registerObservationPack;

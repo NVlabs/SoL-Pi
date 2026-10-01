@@ -101,11 +101,14 @@ The following conservative configuration enables only the two local mechanisms t
   "observationPack": true,
   "evidencePreservingReducer": false,
   "onlineContextCompact": false,
+  "observationPackFullSends": 2,
   "cacheWriteReadRatio": 12.5
 }
 ```
 
-Enable additional mechanisms only after reviewing their configuration and security implications. SoL-Pi uses no dedicated environment variables; feature flags, the reducer provider/model route, and the compaction ratio are configured in `sol-pi.json`. See [sol-pi.example.json](sol-pi.example.json) for a template listing every key.
+Set `observationPackFullSends` to `0` when the provider bills prompt caching and the context is large: Observation Pack then projects the placeholder from the first provider request, so a message never changes after it has been sent and the cached prefix stays valid. See [Configuration](docs/configuration.md#observationpackfullsends) for the measured trade-off.
+
+Enable additional mechanisms only after reviewing their configuration and security implications. SoL-Pi uses no dedicated environment variables; feature flags, the Observation Pack full-send count, the reducer provider/model route, and the compaction ratio are configured in `sol-pi.json`. See [sol-pi.example.json](sol-pi.example.json) for a template listing every key.
 
 For the complete schema, see [Configuration](docs/configuration.md). Coding agents and automated environments should follow the canonical [agent installation and configuration protocol](agents-install.md), which describes an all-enabled configuration checked with `scripts/check-sol-pi-config.mjs --require-all-enabled`.
 

@@ -33,9 +33,9 @@ async function sessionRoot(): Promise<string> {
 	return value;
 }
 
-function observationPackPi(): FakePi {
+function observationPackPi(fullSends?: number): FakePi {
 	const pi = new FakePi();
-	createObservationPackExtension()(pi.asExtensionApi());
+	createObservationPackExtension({ fullSends })(pi.asExtensionApi());
 	return pi;
 }
 
@@ -153,6 +153,44 @@ describe("observation pack", () => {
 		const id = projected[2]?.match(/id: (obs_[a-f0-9]{24})/u)?.[1];
 		expect(id).toBeTruthy();
 		expect(await readFile(observationPath(sessionDir, id!), "utf8")).toBe(body);
+	});
+
+	it("projects the placeholder from the first request when full sends are disabled", async () => {
+		const sessionDir = await sessionRoot();
+		const body = `cache stable\n${repeatPastThreshold("prefix bytes\n")}`;
+		const message = toolResult(body);
+		const projected = await project(observationPackPi(0), message, sessionDir, 4);
+
+		// A prompt-cache prefix survives only while the projected text is unchanged,
+		// so with fullSends = 0 the first request must already carry the placeholder
+		// and every later request must send the same bytes.
+		expect(projected[0]).not.toBe(body);
+		expect(projected[0]).toMatch(/^\[large tool result replaced from the first provider request/u);
+		expect(new Set(projected).size).toBe(1);
+		expect(resultText(message)).toBe(body);
+
+		const id = projected[0]?.match(/id: (obs_[a-f0-9]{24})/u)?.[1];
+		expect(id).toBeTruthy();
+		expect(await readFile(observationPath(sessionDir, id!), "utf8")).toBe(body);
+	});
+
+	it("names the configured full-send count in the placeholder", async () => {
+		const sessionDir = await sessionRoot();
+		const body = `named policy\n${repeatPastThreshold("prefix bytes\n")}`;
+		const projected = await project(observationPackPi(1), toolResult(body), sessionDir, 3);
+
+		expect(projected[0]).toBe(body);
+		expect(projected[1]).toMatch(/^\[large tool result replaced after its first 1 provider requests\]/u);
+		expect(projected[1]).toBe(projected[2]);
+	});
+
+	it("falls back to the default count for an invalid full-send value", async () => {
+		const sessionDir = await sessionRoot();
+		const body = `invalid policy\n${repeatPastThreshold("prefix bytes\n")}`;
+		const projected = await project(observationPackPi(-1), toolResult(body), sessionDir, FULL_SENDS + 1);
+
+		expect(projected[0]).toBe(body);
+		expect(projected[FULL_SENDS]).toMatch(/replaced after its first 2 provider requests/u);
 	});
 
 	it("announces the first measured placeholder saving only in TUI mode", async () => {
