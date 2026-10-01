@@ -51,6 +51,8 @@ Pi reports the session as idle while an extension-requested manual compaction is
 
 Online Context Compact reads `ExtensionContext.getContextUsage()` for both the context window and the provider-counted context size. When Pi reports no size — as it does between a compaction and the next answered request — the boundary falls back to its own estimate.
 
+With `onlineContextCompact` enabled, system-prompt estimation accepts either a string or an array of string segments, including readonly arrays. Segments are joined with newlines before applying the existing UTF-8 byte-length estimate of one token per four bytes, rounded up. This normalization is local to estimation: it does not modify the prompt or add model calls. String estimates remain unchanged, and the byte-based heuristic is still not an exact tokenizer.
+
 The standalone entry passes `cacheWriteReadRatio` from `sol-pi.json` directly into Online Context Compact's economic check. It does not inspect model price metadata. Changing models during a session does not change the ratio; users who want a different decision policy update the configuration and start a new session.
 
 ## Interactive TUI
