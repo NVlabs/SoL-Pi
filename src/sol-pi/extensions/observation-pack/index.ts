@@ -92,15 +92,17 @@ export function createObservationPackExtension(): ExtensionFactory {
 				if (Buffer.byteLength(content, "utf8") > RECALL_MAX_BYTES || countLines(content) > RECALL_MAX_LINES) {
 					throw new Error("Recall output exceeded its hard limit");
 				}
-				await ledgerFor(ctx)({
-					event: "recall",
-					id: params.id,
-					offset,
-					bytes: chunk.bytes,
-					lines: chunk.lines,
-					nextOffset: chunk.nextOffset,
-					eof: chunk.eof,
-				});
+				await ledgerFor(ctx)([
+					{
+						event: "recall",
+						id: params.id,
+						offset,
+						bytes: chunk.bytes,
+						lines: chunk.lines,
+						nextOffset: chunk.nextOffset,
+						eof: chunk.eof,
+					},
+				]);
 				return {
 					content: [{ type: "text", text: content }],
 					details: {
@@ -137,6 +139,9 @@ export function createObservationPackExtension(): ExtensionFactory {
 		pi.on("context", async (event, ctx: ExtensionContext) => {
 			const projected = [...event.messages];
 			const root = runtimeRoot(ctx);
+			const ledgerEntries: Record<string, unknown>[] = [];
+			const pendingSentCounts = new Map<string, number>();
+			const pendingSavings: number[] = [];
 			// How many provider requests each message has already been part of,
 			// counted by the assistant messages that follow it.
 			const priorAssistantCounts = new Array<number>(event.messages.length);
@@ -158,9 +163,10 @@ export function createObservationPackExtension(): ExtensionFactory {
 					await ensureStored(observation);
 
 					const sendCountKey = `${root}\0${observation.id}`;
-					const previousSends = sentCounts.get(sendCountKey) ?? priorAssistantCounts[index] ?? 0;
+					const previousSends =
+						pendingSentCounts.get(sendCountKey) ?? sentCounts.get(sendCountKey) ?? priorAssistantCounts[index] ?? 0;
 					if (previousSends < FULL_SENDS) {
-						await ledgerFor(ctx)({
+						ledgerEntries.push({
 							event: "full",
 							id: observation.id,
 							request: requestIndex,
@@ -170,14 +176,14 @@ export function createObservationPackExtension(): ExtensionFactory {
 							originalTokens: observation.tokens,
 							contentHash: observation.contentHash,
 						});
-						sentCounts.set(sendCountKey, previousSends + 1);
+						pendingSentCounts.set(sendCountKey, previousSends + 1);
 						continue;
 					}
 
 					const placeholder = placeholderFor(observation);
 					const placeholderTokens = estimateTokens(placeholder);
 					const removedTokens = Math.max(0, observation.tokens - placeholderTokens);
-					await ledgerFor(ctx)({
+					ledgerEntries.push({
 						event: "placeholder",
 						id: observation.id,
 						request: requestIndex,
@@ -190,15 +196,9 @@ export function createObservationPackExtension(): ExtensionFactory {
 						placeholderTokens,
 						removedTokens,
 					});
-					if (previousSends === FULL_SENDS) {
-						showSolPiSavings(
-							ctx,
-							"Observation Pack",
-							formatSavingsCount(removedTokens, "context tokens avoided"),
-						);
-					}
+					if (previousSends === FULL_SENDS) pendingSavings.push(removedTokens);
 					projected[index] = { ...message, content: [{ type: "text", text: placeholder }] };
-					sentCounts.set(sendCountKey, previousSends + 1);
+					pendingSentCounts.set(sendCountKey, previousSends + 1);
 				} catch (error) {
 					// Fail open: a packing failure must never cost the agent its observation.
 					const reason = error instanceof Error ? error.message : String(error);
@@ -206,6 +206,24 @@ export function createObservationPackExtension(): ExtensionFactory {
 				}
 			}
 
+			if (ledgerEntries.length === 0) return { messages: projected };
+			try {
+				await ledgerFor(ctx)(ledgerEntries);
+			} catch (error) {
+				const reason = error instanceof Error ? error.message : String(error);
+				console.error(`[observationpack] fail-open for context ledger: ${reason}`);
+				return { messages: event.messages };
+			}
+
+			for (const [key, count] of pendingSentCounts) sentCounts.set(key, count);
+			for (const removedTokens of pendingSavings) {
+				try {
+					showSolPiSavings(ctx, "Observation Pack", formatSavingsCount(removedTokens, "context tokens avoided"));
+				} catch (error) {
+					const reason = error instanceof Error ? error.message : String(error);
+					console.error(`[observationpack] savings notification failed: ${reason}`);
+				}
+			}
 			return { messages: projected };
 		});
 	};
