@@ -200,6 +200,8 @@ export interface RecallChunk {
 	readonly text: string;
 	readonly bytes: number;
 	readonly lines: number;
+	/** Byte offset the returned text actually starts at, aligned to a character. */
+	readonly offset: number;
 	readonly nextOffset: number;
 	readonly eof: boolean;
 }
@@ -224,10 +226,16 @@ export async function readRecallChunk(
 		const available = Math.max(0, fileStats.size - offset);
 		const buffer = Buffer.alloc(Math.min(available, limits.maxBytes + 4));
 		const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
-		let end = Math.min(bytesRead, limits.maxBytes);
+
+		// A caller-chosen offset can land inside a multi-byte character. Start at
+		// the next character rather than decoding a partial one into U+FFFD.
+		let start = 0;
+		while (start < bytesRead && ((buffer[start] ?? 0) & 0xc0) === 0x80) start += 1;
+
+		let end = Math.min(bytesRead, start + limits.maxBytes);
 		let newlineCount = 0;
 
-		for (let index = 0; index < end; index += 1) {
+		for (let index = start; index < end; index += 1) {
 			if (buffer[index] !== 0x0a) continue;
 			newlineCount += 1;
 			if (newlineCount === limits.maxLines) {
@@ -236,13 +244,14 @@ export async function readRecallChunk(
 			}
 		}
 
-		end = trimUtf8End(buffer, end);
-		const chunk = buffer.subarray(0, end);
-		const nextOffset = offset + chunk.length;
+		end = Math.max(start, trimUtf8End(buffer, end));
+		const chunk = buffer.subarray(start, end);
+		const nextOffset = offset + end;
 		return {
 			text: chunk.toString("utf8"),
 			bytes: chunk.length,
 			lines: countBufferLines(chunk),
+			offset: offset + start,
 			nextOffset,
 			eof: nextOffset >= fileStats.size,
 		};
