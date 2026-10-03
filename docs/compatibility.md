@@ -25,7 +25,7 @@ The queue covers only fused operations registered by this SoL-Pi instance. Exter
 
 ## ObservationPack
 
-ObservationPack changes only the messages projected through the public `context` event. Stored session history remains intact. Original bytes and the JSONL ledger live under the session-derived SoL-Pi directory.
+ObservationPack changes only the messages projected through the public `context` event. Stored session history remains intact. Original bytes and the JSONL ledger live under the session-derived SoL-Pi directory. On a missing-object recall, ObservationPack can rebuild the requested object from the active branch's original tool result, including sources omitted from context by compaction before a fork. Existing objects are not overwritten, and sibling branches are not searched.
 
 ## Evidence-Preserving Reducer
 
