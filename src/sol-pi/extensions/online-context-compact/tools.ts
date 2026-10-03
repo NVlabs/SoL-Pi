@@ -50,10 +50,11 @@ export function registerOnlineTools(pi: ExtensionAPI, handlers: OnlineToolHandle
 		name: "update_plan",
 		label: "Update plan",
 		description:
-			"Replace the complete working plan. A newly completed step becomes a safe point where SoL-Pi may compact context if doing so is economical.",
+			"Replace the complete working plan. Completing a previously registered unfinished step becomes a safe point where SoL-Pi may compact context if doing so is economical. Newly introduced completed steps are recorded as history.",
 		promptSnippet: "Keep the working plan current",
 		promptGuidelines: [
 			"Send the complete plan on every update_plan call.",
+			"Preserve step IDs and register unfinished steps before reporting their completion.",
 			"Keep at most one step in_progress and mark finished steps completed.",
 			"When completing a step, include concise progress evidence when available.",
 		],

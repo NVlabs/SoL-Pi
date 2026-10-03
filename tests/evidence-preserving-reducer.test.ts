@@ -8,7 +8,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import type { AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
-import type { ExtensionContext, ToolResultEvent } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type ExtensionContext, type ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	createEvidencePreservingReducerExtension,
@@ -181,6 +181,30 @@ function load(
 }
 
 describe("evidence-preserving reducer", () => {
+	it("reduces and preserves evidence for an in-memory session", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const signal = "ERROR in-memory worker failed";
+		const body = `${signal}\n${"diagnostic output\n".repeat(400)}`;
+		const { context, pi } = load("", modelComplete(body, (input) => ({
+			schema: REDUCER_RECEIPT_SCHEMA,
+			source_sha256: sourceHash(input),
+			status: "failure",
+			uncertain: false,
+			evidence: [{ kind: "failure", quote: signal }],
+		})), ACTIVE_MODEL, { sessionManager });
+		cleanupPaths.push(runtimeRoot(context));
+		const result = (await pi.emit("tool_result", bashEvent(body), context)) as {
+			content: { type: string; text: string }[];
+		};
+		const receipt = result.content[0]!.text;
+		expect(receipt).toContain("sol_pi_evidence_receipt_v1");
+		const sourcePath = receipt.match(/^source_artifact=(.+)$/mu)?.[1];
+		expect(sourcePath).toBeTruthy();
+		expect(await readFile(sourcePath!, "utf8")).toBe(body);
+		expect(relative(runtimeRoot(context), sourcePath!)).not.toMatch(/^\.\./u);
+		expect(sessionManager.getSessionFile()).toBeUndefined();
+	});
+
 	it("registers without an extension-specific credential", () => {
 		const pi = new FakePi();
 		expect(() => createEvidencePreservingReducerExtension()(pi.asExtensionApi())).not.toThrow();

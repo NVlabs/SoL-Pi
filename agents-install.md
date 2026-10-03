@@ -11,7 +11,7 @@ Installation and configuration are complete only when Pi remains unmodified, the
 - Do not clean, reset, switch, or overwrite unrelated repository changes.
 - Do not print, log, commit, upload, or include any secret in a command line. Check only whether a credential is present.
 - Keep SoL-Pi settings in `sol-pi.json`. The Evidence-Preserving Reducer provider/model route is a SoL-Pi setting; provider URLs, credentials, the main agent model, and shell behavior remain Pi settings.
-- Keep persistent artifacts under Pi's session-derived `sol-pi/<session-id>/` root; do not configure a separate storage path.
+- Keep persistent artifacts under Pi's session-derived `sol-pi/<session-id>/` root. For `--no-session` and in-memory sessions, use the automatic private directory under the system temporary directory; do not configure a separate storage path. Temporary archives remain after worker exit for callers to read, with cleanup managed by the host or caller.
 
 ## Inputs
 

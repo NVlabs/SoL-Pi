@@ -59,7 +59,8 @@ export function analyzePlanTransition(previous: readonly PlanStep[], next: reado
 
 	for (const step of next) {
 		const prior = previousById.get(step.id);
-		if ((!prior || prior.status !== "completed") && step.status === "completed") completedSteps.push(step);
+		// A newly introduced completed step establishes history, not a status transition.
+		if (prior && prior.status !== "completed" && step.status === "completed") completedSteps.push(step);
 		if (prior && prior.goal !== step.goal) {
 			advice.push(`Plan step ${JSON.stringify(step.id)} changed goal; reuse an id only for the same goal.`);
 		}
