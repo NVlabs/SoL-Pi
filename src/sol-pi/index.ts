@@ -19,7 +19,8 @@ export function registerConfiguredFeatures(pi: ExtensionAPI, config: SolPiConfig
 			reducerProvider: config.evidencePreservingReducerProvider,
 		});
 	}
-	if (config.onlineContextCompact) registerOnlineContextCompact(pi, config.cacheWriteReadRatio);
+	if (config.onlineContextCompact)
+		registerOnlineContextCompact(pi, config.cacheWriteReadRatio, config.minContextRatio);
 }
 
 export type SolPiConfigLoader = (ctx: ExtensionContext) => SolPiConfig;

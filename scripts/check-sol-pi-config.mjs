@@ -13,10 +13,17 @@ const FEATURE_KEYS = [
 	"onlineContextCompact",
 ];
 const DEFAULT_CACHE_WRITE_READ_RATIO = 12.5;
+const DEFAULT_MIN_CONTEXT_RATIO = 0;
 const DEFAULT_EPR_REDUCER_PROVIDER = ["openai", "codex"].join("-");
 const DEFAULT_EPR_REDUCER_MODEL = ["gpt-5.6", "luna"].join("-");
 const STRING_KEYS = ["evidencePreservingReducerModel", "evidencePreservingReducerProvider"];
-const CONFIG_KEYS = new Set(["version", ...FEATURE_KEYS, ...STRING_KEYS, "cacheWriteReadRatio"]);
+const CONFIG_KEYS = new Set([
+	"version",
+	...FEATURE_KEYS,
+	...STRING_KEYS,
+	"cacheWriteReadRatio",
+	"minContextRatio",
+]);
 
 function fail(message) {
 	throw new Error(message);
@@ -85,6 +92,18 @@ function validateConfig(value, requireAllEnabled) {
 		fail("cacheWriteReadRatio must be a finite non-negative number");
 	}
 	effective.cacheWriteReadRatio = cacheWriteReadRatio;
+	const minContextRatio = Object.hasOwn(value, "minContextRatio")
+		? value.minContextRatio
+		: DEFAULT_MIN_CONTEXT_RATIO;
+	if (
+		typeof minContextRatio !== "number" ||
+		!Number.isFinite(minContextRatio) ||
+		minContextRatio < 0 ||
+		minContextRatio > 1
+	) {
+		fail("minContextRatio must be a finite number between 0 and 1");
+	}
+	effective.minContextRatio = minContextRatio;
 	effective.evidencePreservingReducerModel = stringConfigValue(
 		value,
 		"evidencePreservingReducerModel",

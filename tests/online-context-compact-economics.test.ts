@@ -146,4 +146,62 @@ describe("Online Context Compact economics", () => {
 			requestsSinceLastCompaction: null,
 		});
 	});
+
+	it("defers an otherwise-economic compaction below the context floor", () => {
+		// 80k of 200k is 40% occupancy, under a 75% floor.
+		expect(
+			decision({
+				economics: { ...DEFAULT_COMPACTION_ECONOMICS, minContextRatio: 0.75 },
+			}),
+		).toMatchObject({ compact: false, reason: "deferred_below_context_floor" });
+	});
+
+	it("allows economic compaction at or above the context floor", () => {
+		expect(
+			decision({
+				contextTokens: 150_000,
+				economics: { ...DEFAULT_COMPACTION_ECONOMICS, minContextRatio: 0.75 },
+			}),
+		).toMatchObject({ compact: true, reason: "economic" });
+		// Exactly on the floor is not "below" it.
+		expect(
+			decision({
+				contextTokens: 80_000,
+				economics: { ...DEFAULT_COMPACTION_ECONOMICS, minContextRatio: 0.4 },
+			}),
+		).toMatchObject({ compact: true, reason: "economic" });
+	});
+
+	it("treats a zero floor as disabled", () => {
+		expect(
+			decision({ economics: { ...DEFAULT_COMPACTION_ECONOMICS, minContextRatio: 0 } }),
+		).toMatchObject({ compact: true, reason: "economic" });
+		expect(DEFAULT_COMPACTION_ECONOMICS.minContextRatio).toBe(0);
+	});
+
+	it("keeps window protection absolute over the floor", () => {
+		// 195k of 200k is under a 0.99 floor, but window protection must still fire.
+		expect(
+			decision({
+				priorCompactionCount: 1,
+				requestsSinceLastCompaction: 1,
+				contextTokens: 195_000,
+				cacheWriteReadRatio: 100,
+				economics: {
+					...DEFAULT_COMPACTION_ECONOMICS,
+					windowReserveTokens: 10_000,
+					minContextRatio: 0.99,
+				},
+			}),
+		).toMatchObject({ compact: true, reason: "window_protection" });
+	});
+
+	it("cannot apply the floor when the context window is unknown", () => {
+		expect(
+			decision({
+				contextWindowTokens: null,
+				economics: { ...DEFAULT_COMPACTION_ECONOMICS, minContextRatio: 0.75 },
+			}),
+		).toMatchObject({ compact: true, reason: "economic" });
+	});
 });

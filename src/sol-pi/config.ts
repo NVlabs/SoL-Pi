@@ -12,6 +12,7 @@ import {
 } from "./extensions/evidence-preserving-reducer/config.ts";
 
 export const DEFAULT_CACHE_WRITE_READ_RATIO = 12.5;
+export const DEFAULT_MIN_CONTEXT_RATIO = 0;
 
 export interface SolPiConfig {
 	readonly version: 1;
@@ -22,6 +23,7 @@ export interface SolPiConfig {
 	readonly evidencePreservingReducerProvider: string;
 	readonly onlineContextCompact: boolean;
 	readonly cacheWriteReadRatio: number;
+	readonly minContextRatio: number;
 }
 
 export const DEFAULT_CONFIG: SolPiConfig = Object.freeze({
@@ -33,6 +35,7 @@ export const DEFAULT_CONFIG: SolPiConfig = Object.freeze({
 	evidencePreservingReducerProvider: DEFAULT_REDUCER_PROVIDER,
 	onlineContextCompact: false,
 	cacheWriteReadRatio: DEFAULT_CACHE_WRITE_READ_RATIO,
+	minContextRatio: DEFAULT_MIN_CONTEXT_RATIO,
 });
 
 const FEATURE_KEYS = [
@@ -42,7 +45,13 @@ const FEATURE_KEYS = [
 	"onlineContextCompact",
 ] as const;
 const STRING_KEYS = ["evidencePreservingReducerModel", "evidencePreservingReducerProvider"] as const;
-const CONFIG_KEYS = new Set<string>(["version", ...FEATURE_KEYS, ...STRING_KEYS, "cacheWriteReadRatio"]);
+const CONFIG_KEYS = new Set<string>([
+	"version",
+	...FEATURE_KEYS,
+	...STRING_KEYS,
+	"cacheWriteReadRatio",
+	"minContextRatio",
+]);
 
 export function findConfigPath(
 	cwd = process.cwd(),
@@ -99,6 +108,17 @@ export function loadSolPiConfig(
 	) {
 		throw new Error(`SoL-Pi config cacheWriteReadRatio must be a finite non-negative number: ${path}`);
 	}
+	const minContextRatio = Object.hasOwn(record, "minContextRatio")
+		? record.minContextRatio
+		: DEFAULT_MIN_CONTEXT_RATIO;
+	if (
+		typeof minContextRatio !== "number" ||
+		!Number.isFinite(minContextRatio) ||
+		minContextRatio < 0 ||
+		minContextRatio > 1
+	) {
+		throw new Error(`SoL-Pi config minContextRatio must be a finite number between 0 and 1: ${path}`);
+	}
 	const evidencePreservingReducerModel = stringConfigValue(
 		record,
 		"evidencePreservingReducerModel",
@@ -116,6 +136,7 @@ export function loadSolPiConfig(
 		...DEFAULT_CONFIG,
 		...record,
 		cacheWriteReadRatio,
+		minContextRatio,
 		evidencePreservingReducerModel,
 		evidencePreservingReducerProvider,
 	}) as SolPiConfig;
