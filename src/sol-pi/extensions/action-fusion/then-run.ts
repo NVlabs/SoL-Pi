@@ -67,6 +67,29 @@ export async function assertUnchangedBeforeCommand(
 	}
 }
 
+
+/**
+ * Pi >=0.99 returns non-zero bash exits as `{ isError: true }` instead of throwing.
+ * Treat those the same as thrown failures so Action Fusion does not report success.
+ */
+export function thenRunCommandFailed(result: AgentToolResult<unknown>): boolean {
+	if (result.isError === true) {
+		return true;
+	}
+	const structured = result.structuredContent;
+	if (
+		structured !== null &&
+		typeof structured === "object" &&
+		!Array.isArray(structured) &&
+		"exit_code" in structured &&
+		typeof (structured as { exit_code: unknown }).exit_code === "number" &&
+		(structured as { exit_code: number }).exit_code !== 0
+	) {
+		return true;
+	}
+	return false;
+}
+
 /**
  * Apply a file mutation and, when the model asked for one, run its follow-up
  * command before returning a single observation.
@@ -112,6 +135,9 @@ export async function executeMutationThenRun<TDetails>({
 		try {
 			const bashResult = await bash.execute(`${toolCallId}:then_run`, thenRun, signal, undefined, ctx);
 			const output = resultText(bashResult);
+			if (thenRunCommandFailed(bashResult)) {
+				throw new Error(output || "command failed");
+			}
 			return {
 				...mutationResult,
 				content: [

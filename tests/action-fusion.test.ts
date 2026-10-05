@@ -11,6 +11,7 @@ import {
 	type ActionFusionOptions,
 	assertUnchangedBeforeCommand,
 	createActionFusionExtension,
+	thenRunCommandFailed,
 } from "../src/sol-pi/extensions/action-fusion/index.ts";
 import { withFusedFileQueue } from "../src/sol-pi/extensions/action-fusion/file-queue.ts";
 import { componentText, plainTheme } from "./helpers.ts";
@@ -418,5 +419,36 @@ describe("action fusion then_run", () => {
 				await writeFile(filePath, "external change\n");
 			}),
 		).rejects.toThrow("[then_run:skipped] target content changed after the fused mutation");
+	});
+});
+
+describe("thenRunCommandFailed", () => {
+	it("detects Pi >=0.99 isError results from non-zero bash exits", () => {
+		expect(
+			thenRunCommandFailed({
+				content: [{ type: "text", text: "Command exited with code 7" }],
+				isError: true,
+				structuredContent: { exit_code: 7, output: "", truncated: false, wall_time_seconds: 0.1 },
+			}),
+		).toBe(true);
+	});
+
+	it("detects non-zero exit_code without isError", () => {
+		expect(
+			thenRunCommandFailed({
+				content: [{ type: "text", text: "oops" }],
+				structuredContent: { exit_code: 1, output: "oops", truncated: false, wall_time_seconds: 0 },
+			}),
+		).toBe(true);
+	});
+
+	it("accepts successful bash results", () => {
+		expect(
+			thenRunCommandFailed({
+				content: [{ type: "text", text: "ok" }],
+				structuredContent: { exit_code: 0, output: "ok", truncated: false, wall_time_seconds: 0 },
+			}),
+		).toBe(false);
+		expect(thenRunCommandFailed({ content: [{ type: "text", text: "ok" }] })).toBe(false);
 	});
 });
