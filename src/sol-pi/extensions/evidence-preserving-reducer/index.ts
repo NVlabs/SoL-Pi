@@ -64,7 +64,11 @@ export async function reduceToolResult(
 	const reducible = await reducibleToolResult(event);
 	if (!reducible || !DIAGNOSTIC_COMMAND.test(reducible.command)) return undefined;
 	const { body, command } = reducible;
-	if (Buffer.byteLength(body, "utf8") < config.minBytes) return undefined;
+	const bytes = Buffer.byteLength(body, "utf8");
+	if (bytes < config.minBytes) {
+		journal("fallback", { reason: "source-under-min-bytes", bytes, minBytes: config.minBytes });
+		return undefined;
+	}
 	if (body.length > config.maxChars) {
 		journal("fallback", { reason: "source-over-max-chars", sourceChars: body.length, maxChars: config.maxChars });
 		return undefined;
