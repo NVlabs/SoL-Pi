@@ -26,6 +26,15 @@ function textContent(event: ToolResultEvent): string {
 		.join("\n");
 }
 
+/** Pi appends these statuses after captured output, so they are absent from its full-output file. */
+function splitExecutionStatus(inline: string, isError: boolean): { log: string; status: string } {
+	if (!isError) return { log: inline, status: "" };
+	const match = inline.match(
+		/(?:^|\n\n)(Command (?:exited with code -?\d+|timed out after \d+(?:\.\d+)?(?:e[+-]?\d+)? seconds|aborted|terminated without an exit code))$/u,
+	);
+	return match ? { log: inline.slice(0, match.index), status: `\n\n${match[1]}` } : { log: inline, status: "" };
+}
+
 export function detailsFullOutputPath(details: unknown): string | undefined {
 	const value = recordValue(details, "fullOutputPath");
 	return typeof value === "string" ? value : undefined;
@@ -66,10 +75,11 @@ export async function reducibleToolResult(event: ToolResultEvent): Promise<Reduc
 		const command = typeof event.input.command === "string" ? event.input.command : "";
 		if (!command) return undefined;
 		const inline = textContent(event);
+		const { log, status } = splitExecutionStatus(inline, event.isError);
 		return {
 			command,
-			body: await exactBodyFromInline(inline, event.details),
-			projectReceipt: (receipt) => [{ type: "text", text: receipt }],
+			body: await exactBodyFromInline(log, event.details),
+			projectReceipt: (receipt) => [{ type: "text", text: `${receipt}${status}` }],
 		};
 	}
 	if (event.toolName !== "write" && event.toolName !== "edit") return undefined;
@@ -86,13 +96,14 @@ export async function reducibleToolResult(event: ToolResultEvent): Promise<Reduc
 		const suffix = block.text.slice(suffixStart);
 		const separator = suffix.match(/^(?:\r?\n)+/u)?.[0] ?? "\n";
 		const inline = suffix.slice(separator === "\n" && !suffix.startsWith("\n") ? 0 : separator.length);
+		const { log, status } = splitExecutionStatus(inline, event.isError);
 		return {
 			command: commandValue,
-			body: await exactBodyFromInline(inline, event.details),
+			body: await exactBodyFromInline(log, event.details),
 			projectReceipt: (receipt) =>
 				event.content.map((content, contentIndex) =>
 					contentIndex === index && content.type === "text"
-						? { ...content, text: `${content.text.slice(0, suffixStart)}${separator}${receipt}` }
+						? { ...content, text: `${content.text.slice(0, suffixStart)}${separator}${receipt}${status}` }
 						: content,
 				),
 		};
