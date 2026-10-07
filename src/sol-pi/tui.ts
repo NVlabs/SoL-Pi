@@ -9,7 +9,7 @@ import { type Component, Container, Text } from "@earendil-works/pi-tui";
 export type SolPiTuiMechanism =
 	| "Action Fusion"
 	| "Observation Pack"
-	| "Luna Delegating"
+	| "Evidence Reducer"
 	| "Online Context Compact";
 
 const STATUS_KEY = "sol-pi-savings";
