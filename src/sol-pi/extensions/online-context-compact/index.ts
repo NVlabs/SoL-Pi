@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_CACHE_WRITE_READ_RATIO } from "../../config.ts";
+import { DEFAULT_CACHE_WRITE_READ_RATIO, DEFAULT_MIN_CONTEXT_RATIO } from "../../config.ts";
 import { createOnlineContextCompactExtension } from "./extension.ts";
 
 export {
@@ -43,8 +43,9 @@ export type { PlanProgress, PlanUpdateInput } from "./tools.ts";
 export function registerOnlineContextCompact(
 	pi: ExtensionAPI,
 	cacheWriteReadRatio = DEFAULT_CACHE_WRITE_READ_RATIO,
+	minContextRatio = DEFAULT_MIN_CONTEXT_RATIO,
 ): void {
-	createOnlineContextCompactExtension({ cacheWriteReadRatio })(pi);
+	createOnlineContextCompactExtension({ cacheWriteReadRatio, minContextRatio })(pi);
 }
 
 export default registerOnlineContextCompact;

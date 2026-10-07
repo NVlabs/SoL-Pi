@@ -54,6 +54,7 @@ const RECOVERABLE_COMPACTION_ERRORS = new Set([
 export type OnlineContextCompactOptions = {
 	readonly cacheWriteReadRatio?: number | null;
 	readonly keepRecentTokens?: number;
+	readonly minContextRatio?: number;
 };
 
 type PendingBoundary = { readonly toolCallId: string };
@@ -73,6 +74,14 @@ function resolveCacheWriteReadRatio(value: number | null | undefined): number | 
 	if (value === undefined || value === null) return null;
 	if (!Number.isFinite(value) || value < 0) {
 		throw new Error("Online Context Compact cacheWriteReadRatio must be finite and non-negative");
+	}
+	return value;
+}
+
+function resolveMinContextRatio(value: number | undefined): number {
+	if (value === undefined) return DEFAULT_COMPACTION_ECONOMICS.minContextRatio;
+	if (!Number.isFinite(value) || value < 0 || value > 1) {
+		throw new Error("Online Context Compact minContextRatio must be a finite number between 0 and 1");
 	}
 	return value;
 }
@@ -185,6 +194,7 @@ function validPositiveInteger(value: unknown): value is number {
 export function createOnlineContextCompactExtension(options: OnlineContextCompactOptions = {}): ExtensionFactory {
 	const keepRecentTokens = resolveKeepRecentTokens(options.keepRecentTokens);
 	const cacheWriteReadRatio = resolveCacheWriteReadRatio(options.cacheWriteReadRatio);
+	const minContextRatio = resolveMinContextRatio(options.minContextRatio);
 
 	return (pi) => {
 		let state: OnlineState = initialOnlineState();
@@ -345,7 +355,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 				carriedDebtTokens: state.cacheDebtTokens,
 				cacheDebtRepaymentTokens: state.cacheDebtRepaymentTokens,
 				cacheWriteReadRatio,
-				economics: DEFAULT_COMPACTION_ECONOMICS,
+				economics: { ...DEFAULT_COMPACTION_ECONOMICS, minContextRatio },
 			});
 			const decision: CompactionDecision =
 				priced.compact && archiveTokens === 0
