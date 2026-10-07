@@ -47,6 +47,7 @@ const ALL_ENABLED = {
 	evidencePreservingReducerProvider: DEFAULT_EPR_PROVIDER,
 	evidencePreservingReducerModel: DEFAULT_EPR_MODEL,
 	onlineContextCompact: true,
+	observationPackFullSends: 2,
 	cacheWriteReadRatio: 12.5,
 };
 
@@ -58,6 +59,7 @@ describe("SoL-Pi configuration preflight", () => {
 			ok: true,
 			all_enabled: true,
 			effective_config: {
+				observationPackFullSends: 2,
 				cacheWriteReadRatio: 12.5,
 				evidencePreservingReducerProvider: DEFAULT_EPR_PROVIDER,
 				evidencePreservingReducerModel: DEFAULT_EPR_MODEL,
@@ -106,6 +108,19 @@ describe("SoL-Pi configuration preflight", () => {
 		const result = run(writeConfig({ ...ALL_ENABLED, cacheWriteReadRatio }));
 		expect(result.status).toBe(1);
 		expect(result.stderr).toContain("cacheWriteReadRatio must be a finite non-negative number");
+	});
+
+	it("applies the default Observation Pack full-send count when the field is omitted", () => {
+		const { observationPackFullSends: _fullSends, ...withoutFullSends } = ALL_ENABLED;
+		const result = run(writeConfig(withoutFullSends));
+		expect(result.status).toBe(0);
+		expect(JSON.parse(result.stdout).effective_config.observationPackFullSends).toBe(2);
+	});
+
+	it.each([null, "2", -1, 1.5])("rejects an invalid full-send count: %j", (observationPackFullSends) => {
+		const result = run(writeConfig({ ...ALL_ENABLED, observationPackFullSends }));
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain("observationPackFullSends must be a non-negative integer");
 	});
 
 	it.each([

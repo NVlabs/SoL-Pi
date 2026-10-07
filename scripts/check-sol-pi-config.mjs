@@ -13,10 +13,17 @@ const FEATURE_KEYS = [
 	"onlineContextCompact",
 ];
 const DEFAULT_CACHE_WRITE_READ_RATIO = 12.5;
+const DEFAULT_OBSERVATION_PACK_FULL_SENDS = 2;
 const DEFAULT_EPR_REDUCER_PROVIDER = ["openai", "codex"].join("-");
 const DEFAULT_EPR_REDUCER_MODEL = ["gpt-5.6", "luna"].join("-");
 const STRING_KEYS = ["evidencePreservingReducerModel", "evidencePreservingReducerProvider"];
-const CONFIG_KEYS = new Set(["version", ...FEATURE_KEYS, ...STRING_KEYS, "cacheWriteReadRatio"]);
+const CONFIG_KEYS = new Set([
+	"version",
+	...FEATURE_KEYS,
+	...STRING_KEYS,
+	"cacheWriteReadRatio",
+	"observationPackFullSends",
+]);
 
 function fail(message) {
 	throw new Error(message);
@@ -85,6 +92,17 @@ function validateConfig(value, requireAllEnabled) {
 		fail("cacheWriteReadRatio must be a finite non-negative number");
 	}
 	effective.cacheWriteReadRatio = cacheWriteReadRatio;
+	const observationPackFullSends = Object.hasOwn(value, "observationPackFullSends")
+		? value.observationPackFullSends
+		: DEFAULT_OBSERVATION_PACK_FULL_SENDS;
+	if (
+		typeof observationPackFullSends !== "number" ||
+		!Number.isInteger(observationPackFullSends) ||
+		observationPackFullSends < 0
+	) {
+		fail("observationPackFullSends must be a non-negative integer");
+	}
+	effective.observationPackFullSends = observationPackFullSends;
 	effective.evidencePreservingReducerModel = stringConfigValue(
 		value,
 		"evidencePreservingReducerModel",
