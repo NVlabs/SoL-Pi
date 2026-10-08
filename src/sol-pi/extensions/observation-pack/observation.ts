@@ -175,11 +175,49 @@ function completeLineExcerpt(text: string, budgetBytes: number, fromEnd: boolean
 	return selected.join("");
 }
 
+/**
+ * Take whole code points up to a byte budget, from either end.
+ *
+ * Used when the payload has no line short enough to excerpt: one long line of
+ * minified JSON, a `jq -c` result, a `curl` body. Cutting on a UTF-8 boundary
+ * keeps the excerpt from ending in a replacement character.
+ */
+function byteBoundedExcerpt(text: string, budgetBytes: number, fromEnd: boolean): string {
+	// One code point is at least one byte, so this window is a superset of the
+	// characters that can fit the budget.
+	const characters = [...(fromEnd ? text.slice(-budgetBytes) : text.slice(0, budgetBytes))];
+	const selected: string[] = [];
+	let selectedBytes = 0;
+
+	for (let index = 0; index < characters.length; index += 1) {
+		const character = characters[fromEnd ? characters.length - 1 - index : index];
+		if (character === undefined) break;
+		const characterBytes = Buffer.byteLength(character, "utf8");
+		if (selectedBytes + characterBytes > budgetBytes) break;
+		if (fromEnd) selected.unshift(character);
+		else selected.push(character);
+		selectedBytes += characterBytes;
+	}
+
+	return selected.join("");
+}
+
+interface PlaceholderExcerpt {
+	readonly text: string;
+	readonly wholeLines: boolean;
+}
+
+function placeholderExcerpt(text: string, budgetBytes: number, fromEnd: boolean): PlaceholderExcerpt {
+	const lines = completeLineExcerpt(text, budgetBytes, fromEnd);
+	if (lines.length > 0) return { text: lines, wholeLines: true };
+	return { text: byteBoundedExcerpt(text, budgetBytes, fromEnd), wholeLines: false };
+}
+
 export function placeholderFor(observation: Observation): string {
 	const headBudget = Math.floor(PLACEHOLDER_EXCERPT_BYTES / 2);
 	const tailBudget = PLACEHOLDER_EXCERPT_BYTES - headBudget;
-	const head = completeLineExcerpt(observation.text, headBudget, false);
-	const tail = completeLineExcerpt(observation.text, tailBudget, true);
+	const head = placeholderExcerpt(observation.text, headBudget, false);
+	const tail = placeholderExcerpt(observation.text, tailBudget, true);
 	return [
 		`[large tool result replaced after its first ${FULL_SENDS} provider requests]`,
 		`id: ${observation.id}`,
@@ -188,10 +226,14 @@ export function placeholderFor(observation: Observation): string {
 		`original_lines: ${observation.lines}`,
 		`estimated_tokens: ${observation.tokens}`,
 		`retrieve: call obs_recall with {"id":"${observation.id}","offset":0}; continue with returned next_offset`,
-		`[first complete lines, up to ${headBudget} bytes]`,
-		head,
-		`[middle omitted; last complete lines, up to ${tailBudget} bytes]`,
-		tail,
+		head.wholeLines
+			? `[first complete lines, up to ${headBudget} bytes]`
+			: `[no complete line fits; first ${headBudget} bytes]`,
+		head.text,
+		tail.wholeLines
+			? `[middle omitted; last complete lines, up to ${tailBudget} bytes]`
+			: `[middle omitted; no complete line fits; last ${tailBudget} bytes]`,
+		tail.text,
 		`[${observation.bytes} original bytes omitted]`,
 	].join("\n");
 }
