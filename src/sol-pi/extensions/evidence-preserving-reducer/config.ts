@@ -26,7 +26,15 @@ export const DIAGNOSTIC_COMMAND =
 	/(?:^|[;&|()\s])(?:lake\s+build|lake\s+env\s+lean|lean|coq|cargo(?:\s+(?:build|test|check))?|zig\s+build|pytest|python(?:3)?\s+-m\s+(?:pytest|unittest|py_compile)|ctest|cmake\s+--build|ninja|make|npm\s+test|pnpm\s+test|yarn\s+test|go\s+test|bazel\s+test)(?:\s|$)/i;
 
 export const FAILURE_SIGNAL = /error|failed|failure|fatal|exception|panic|timeout|unsolved|type mismatch|assert/i;
-export const LIKELY_SECRET = /(?:api[_-]?key|authorization|bearer|access[_-]?token|secret)[^\n]{0,32}[=:][^\n]+/i;
+/**
+ * Precaution, not a complete secret scanner: shapes that appear in real build
+ * and test output. Password assignments use a tight window so ordinary
+ * identifiers such as `test_password_reset` do not read as assignments. CLI
+ * flags require a command-shaped line plus one bounded value, and private-key
+ * armor needs no assignment at all.
+ */
+export const LIKELY_SECRET =
+	/(?:api[_-]?key|authorization|bearer|access[_-]?token|secret)[^\n]{0,32}(?::|=(?!=))[^\n]+|(?:^|\n)(?![^\n]*(?:\bassert\b|\bAssertion(?:Failed)?Error\b)[^\n]*\b(?:password|passwd|passphrase|private[ _-]?key)\b)[^\n]*?(?:\b(?:password|passwd|passphrase|private[ _-]?key)\b|\b[A-Z][A-Z0-9_]*(?:PASSWORD|PASSWD|PASSPHRASE)\b)["'\s]{0,4}(?::|=(?!=))[^\n]+|(?:^|\n)[ \t]*(?!(?:use|pass|provide|specify|the|a|an|this|that)\b)(?:[$>#][ \t]+)?[a-z0-9_./+-]+(?:[ \t]+(?:[a-z0-9_./:@+-]+|--?[a-z0-9][a-z0-9_-]*(?:=[^\s]+)?)){0,7}[ \t]+--(?:password|passphrase)[ \t]+(?!(?:flag|option|argument|value|when|to|from|for|is|was|will|can|should|must|required|optional)\b)(?:"[^"\n]+"|'[^'\n]+'|[^\s;&|]+)|-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY(?: [A-Z0-9]+)*-----/i;
 
 export interface ReducerConfig {
 	readonly maxChars: number;
