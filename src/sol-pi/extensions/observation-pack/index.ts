@@ -50,7 +50,7 @@ const RECALL_LIMITS = {
 
 export function createObservationPackExtension(): ExtensionFactory {
 	return (pi: ExtensionAPI) => {
-		const sentCounts = new Map<string, number>();
+		const sentCounts = new Map<string, Map<string, Map<string, number>>>();
 		const ledgers = new Map<string, Ledger>();
 		const ledgerFor = (ctx: ExtensionContext): Ledger => {
 			const root = runtimeRoot(ctx);
@@ -61,6 +61,12 @@ export function createObservationPackExtension(): ExtensionFactory {
 			}
 			return ledger;
 		};
+
+		pi.on("session_shutdown", (_event, ctx) => {
+			const root = runtimeRoot(ctx);
+			sentCounts.delete(root);
+			ledgers.delete(root);
+		});
 
 		pi.registerTool({
 			name: "obs_recall",
@@ -137,6 +143,19 @@ export function createObservationPackExtension(): ExtensionFactory {
 		pi.on("context", async (event, ctx: ExtensionContext) => {
 			const projected = [...event.messages];
 			const root = runtimeRoot(ctx);
+			const branchIds = ["<root>", ...ctx.sessionManager.getBranch().map((entry) => entry.id)];
+			const leafId = ctx.sessionManager.getLeafId() ?? "<root>";
+			let sessionCounts = sentCounts.get(root);
+			if (!sessionCounts) {
+				sessionCounts = new Map();
+				sentCounts.set(root, sessionCounts);
+			}
+			const activeCounts = new Map<string, number>();
+			for (const id of branchIds) {
+				for (const [observationId, count] of sessionCounts.get(id) ?? []) {
+					activeCounts.set(observationId, Math.max(activeCounts.get(observationId) ?? 0, count));
+				}
+			}
 			// How many provider requests each message has already been part of,
 			// counted by the assistant messages that follow it.
 			const priorAssistantCounts = new Array<number>(event.messages.length);
@@ -157,8 +176,9 @@ export function createObservationPackExtension(): ExtensionFactory {
 					if (!observation) continue;
 					await ensureStored(observation);
 
-					const sendCountKey = `${root}\0${observation.id}`;
-					const previousSends = sentCounts.get(sendCountKey) ?? priorAssistantCounts[index] ?? 0;
+					const branchSends = activeCounts.get(observation.id) ?? 0;
+					const historySends = priorAssistantCounts[index] ?? 0;
+					const previousSends = Math.max(branchSends, historySends);
 					if (previousSends < FULL_SENDS) {
 						await ledgerFor(ctx)({
 							event: "full",
@@ -170,7 +190,13 @@ export function createObservationPackExtension(): ExtensionFactory {
 							originalTokens: observation.tokens,
 							contentHash: observation.contentHash,
 						});
-						sentCounts.set(sendCountKey, previousSends + 1);
+						const nextSends = previousSends + 1;
+						if (nextSends > historySends) {
+							const leafCounts = sessionCounts.get(leafId) ?? new Map<string, number>();
+							leafCounts.set(observation.id, nextSends);
+							sessionCounts.set(leafId, leafCounts);
+							activeCounts.set(observation.id, nextSends);
+						}
 						continue;
 					}
 
@@ -198,7 +224,13 @@ export function createObservationPackExtension(): ExtensionFactory {
 						);
 					}
 					projected[index] = { ...message, content: [{ type: "text", text: placeholder }] };
-					sentCounts.set(sendCountKey, previousSends + 1);
+					const nextSends = Math.min(FULL_SENDS + 1, previousSends + 1);
+					if (nextSends > historySends) {
+						const leafCounts = sessionCounts.get(leafId) ?? new Map<string, number>();
+						leafCounts.set(observation.id, nextSends);
+						sessionCounts.set(leafId, leafCounts);
+						activeCounts.set(observation.id, nextSends);
+					}
 				} catch (error) {
 					// Fail open: a packing failure must never cost the agent its observation.
 					const reason = error instanceof Error ? error.message : String(error);

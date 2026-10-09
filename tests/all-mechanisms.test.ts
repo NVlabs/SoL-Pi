@@ -98,7 +98,7 @@ describe("SoL-Pi entrypoint", () => {
 
 		expect(loader).toHaveBeenCalledOnce();
 		expect(pi.registeredTools.map((tool) => tool.name)).toEqual(["obs_recall"]);
-		expect([...pi.handlers.keys()].sort()).toEqual(["context", "session_start"]);
+		expect([...pi.handlers.keys()].sort()).toEqual(["context", "session_shutdown", "session_start"]);
 	});
 
 	it("passes the configured reducer provider/model route into EPR", async () => {
