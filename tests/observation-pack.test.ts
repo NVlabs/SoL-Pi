@@ -33,6 +33,23 @@ async function sessionRoot(): Promise<string> {
 	return value;
 }
 
+let symlinkSupport: Promise<boolean> | undefined;
+/** Windows without Developer Mode / admin rights cannot create symlinks; probe once and cache. */
+function canCreateSymlinks(): Promise<boolean> {
+	symlinkSupport ??= (async () => {
+		const dir = await sessionRoot();
+		const target = join(dir, "probe-target.txt");
+		await writeFile(target, "probe");
+		try {
+			await symlink(target, join(dir, "probe-link.txt"));
+			return true;
+		} catch {
+			return false;
+		}
+	})();
+	return symlinkSupport;
+}
+
 function observationPackPi(): FakePi {
 	const pi = new FakePi();
 	createObservationPackExtension()(pi.asExtensionApi());
@@ -267,7 +284,8 @@ describe("observation pack", () => {
 		expect(projected[2]).toMatch(new RegExp(`id: ${id}`, "u"));
 	});
 
-	it("fails recall closed when an object path is replaced by a symlink", async () => {
+	it("fails recall closed when an object path is replaced by a symlink", async (ctx) => {
+		if (!(await canCreateSymlinks())) ctx.skip();
 		const sessionDir = await sessionRoot();
 		const body = `stored\n${repeatPastThreshold("observation bytes\n")}`;
 		const message = toolResult(body);
@@ -312,7 +330,8 @@ describe("observation pack", () => {
 		expect(Buffer.from(recalled, "utf8")).toEqual(Buffer.from(body, "utf8"));
 	});
 
-	it("fails storage closed when the observation directory is a symlink", async () => {
+	it("fails storage closed when the observation directory is a symlink", async (ctx) => {
+		if (!(await canCreateSymlinks())) ctx.skip();
 		const sessionDir = await sessionRoot();
 		const targetDir = await sessionRoot();
 		await mkdir(join(sessionDir, "sol-pi", SESSION_ID, "observation-pack"), { recursive: true });

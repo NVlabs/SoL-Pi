@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { type BashToolOptions, createBashToolDefinition, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { type BashToolOptions, createBashToolDefinition, type ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { withFusedFileQueue } from "./file-queue.ts";
 
@@ -90,7 +90,7 @@ export async function executeMutationThenRun<TDetails>({
 	mutate: () => Promise<AgentToolResult<TDetails>>;
 	bashOptions: BashToolOptions | undefined;
 	signal: AbortSignal | undefined;
-	ctx: ExtensionContext;
+	ctx: ExtensionToolContext;
 }): Promise<AgentToolResult<TDetails>> {
 	return withFusedFileQueue(absolutePath, async () => {
 		let mutationResult: AgentToolResult<TDetails>;
@@ -111,6 +111,9 @@ export async function executeMutationThenRun<TDetails>({
 		const bash = createBashToolDefinition(ctx.cwd, bashOptions);
 		try {
 			const bashResult = await bash.execute(`${toolCallId}:then_run`, thenRun, signal, undefined, ctx);
+			// Pi 1.x reports tool failures through `isError` instead of throwing; older
+			// releases throw. Route both to the same failure handling below.
+			if (bashResult.isError) throw new Error(resultText(bashResult) || "then_run command failed");
 			const output = resultText(bashResult);
 			return {
 				...mutationResult,
