@@ -17,6 +17,8 @@
  * Storage lives under the active Pi session directory.
  */
 
+import { randomUUID } from "node:crypto";
+import { link, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -52,6 +54,61 @@ export function createObservationPackExtension(): ExtensionFactory {
 	return (pi: ExtensionAPI) => {
 		const sentCounts = new Map<string, number>();
 		const ledgers = new Map<string, Ledger>();
+		const recallQueues = new Map<string, Promise<RecallChunk>>();
+		const restoreObservation = async (ctx: ExtensionContext, id: string): Promise<boolean> => {
+			// Forks use a new runtime root. Compacted-away sources are still in
+			// the branch history, but no longer reach the context projection hook.
+			const root = runtimeRoot(ctx);
+			for (const entry of ctx.sessionManager.getBranch()) {
+				if (
+					entry.type !== "message" || entry.message.role !== "toolResult" ||
+					!Array.isArray(entry.message.content) || !isPureTextResult(entry.message)
+				) continue;
+				const observation = createObservation(entry.message, root);
+				if (observation?.id !== id) continue;
+				// A failed write must never leave a partial object at the recall path.
+				// Publish a complete sibling atomically without replacing any existing object.
+				const temporaryPath = `${observation.filePath}.${randomUUID()}.tmp`;
+				try {
+					await ensureStored({ ...observation, filePath: temporaryPath });
+					try {
+						await link(temporaryPath, observation.filePath);
+					} catch (error) {
+						if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
+						// Another writer won publication: reuse only verified identical bytes.
+						await ensureStored(observation);
+					}
+				} finally {
+					await unlink(temporaryPath).catch((error: unknown) => {
+						if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+					});
+				}
+				return true;
+			}
+			return false;
+		};
+		const recallChunk = async (ctx: ExtensionContext, id: string, offset: number): Promise<RecallChunk> => {
+			const path = observationPath(runtimeRoot(ctx), id);
+			const read = async (): Promise<RecallChunk> => {
+				try {
+					return await readRecallChunk(path, offset, RECALL_LIMITS);
+				} catch (error) {
+					if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+					if (!(await restoreObservation(ctx, id))) throw new Error(`Unknown observation id: ${id}`);
+					return await readRecallChunk(path, offset, RECALL_LIMITS);
+				}
+			};
+			// Coalesce simultaneous cache misses for one object, while allowing
+			// unrelated observations to be read and restored independently.
+			const previous = recallQueues.get(path);
+			const pending = previous ? previous.then(read, read) : read();
+			recallQueues.set(path, pending);
+			try {
+				return await pending;
+			} finally {
+				if (recallQueues.get(path) === pending) recallQueues.delete(path);
+			}
+		};
 		const ledgerFor = (ctx: ExtensionContext): Ledger => {
 			const root = runtimeRoot(ctx);
 			let ledger = ledgers.get(root);
@@ -75,15 +132,7 @@ export function createObservationPackExtension(): ExtensionFactory {
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 				if (!isObservationId(params.id)) throw new Error(`Unknown observation id: ${params.id}`);
 				const offset = params.offset ?? 0;
-				let chunk: RecallChunk;
-				try {
-					chunk = await readRecallChunk(observationPath(runtimeRoot(ctx), params.id), offset, RECALL_LIMITS);
-				} catch (error) {
-					if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-						throw new Error(`Unknown observation id: ${params.id}`);
-					}
-					throw error;
-				}
+				const chunk = await recallChunk(ctx, params.id, offset);
 				const header = [
 					`[obs_recall id=${params.id} offset=${offset} next_offset=${chunk.nextOffset} eof=${chunk.eof}]`,
 					`[chunk_bytes=${chunk.bytes} chunk_lines=${chunk.lines}; use next_offset to continue]`,
