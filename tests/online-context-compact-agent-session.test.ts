@@ -29,6 +29,9 @@ import {
 
 const OPEN = [{ id: "build", goal: "build it", status: "in_progress" }] as const;
 const DONE = [{ id: "build", goal: "build it", status: "completed" }] as const;
+// Same completed plan re-stated with a re-keyed id and a reworded goal: the
+// real-world post-compaction restatement that used to re-trigger compaction.
+const REKEYED = [{ id: "rebuild", goal: "build it (restated)", status: "completed" }] as const;
 const PROGRESS = {
 	files_changed: ["src/a.ts"],
 	verification: ["tests passed"],
@@ -168,6 +171,133 @@ async function runCompactionScenario(requestedCompactions: 1 | 2): Promise<void>
 	}
 }
 
+async function runPostCompactionRestatementScenario(
+	reissuedPlans: readonly (readonly { readonly id: string; readonly goal: string; readonly status: "completed" }[])[],
+): Promise<void> {
+	const cwd = await mkdtemp(join(tmpdir(), "sol-pi-occ-reissue-"));
+	const agentDir = join(cwd, "agent");
+	await mkdir(agentDir);
+
+	let session: AgentSession | undefined;
+	try {
+		const finalReply = "final reply after an identical post-compaction plan re-issue";
+		const faux = fauxProvider({
+			provider: "sol-pi-occ-reissue",
+			api: "sol-pi-occ-reissue-api",
+			models: [{ id: "sol-pi-occ-reissue-model", contextWindow: 4_096, maxTokens: 1_024 }],
+		});
+		const responses: FauxResponseStep[] = [
+			fauxAssistantMessage(fauxToolCall("update_plan", { steps: OPEN }, { id: "plan-open" }), {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage(
+				fauxToolCall("update_plan", { steps: DONE, progress: PROGRESS }, { id: "plan-done" }),
+				{ stopReason: "toolUse" },
+			),
+			// Repeated snapshots must not create progress even past the cooldown
+			// or under window pressure. Newly introduced completed IDs are history.
+			...reissuedPlans.map((steps, index) => fauxAssistantMessage(
+				fauxToolCall("update_plan", { steps }, { id: `plan-reissued-${index}` }),
+				{ stopReason: "toolUse" },
+			)),
+			async () => {
+				await new Promise((resolve) => setTimeout(resolve, 80));
+				return fauxAssistantMessage(finalReply);
+			},
+		];
+		faux.setResponses(responses);
+
+		const compactionRequests: CompactionRequest[] = [];
+		const extension: ExtensionFactory = (pi) => {
+			pi.registerProvider(faux.provider);
+			createOnlineContextCompactExtension({ cacheWriteReadRatio: 0, keepRecentTokens: 150 })(pi);
+			pi.on("session_before_compact", (event) => {
+				compactionRequests.push({ customInstructions: event.customInstructions, reason: event.reason });
+				return {
+					compaction: {
+						summary: `deterministic compacted history ${"s".repeat(6_000)}`,
+						firstKeptEntryId: event.preparation.firstKeptEntryId,
+						tokensBefore: event.preparation.tokensBefore,
+					},
+				};
+			});
+		};
+
+		const settingsManager = SettingsManager.inMemory({
+			compaction: { enabled: false, keepRecentTokens: 150, reserveTokens: 1_024 },
+			retry: { enabled: false },
+		});
+		const sessionManager = SessionManager.inMemory(cwd);
+		sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: `historical request ${"x".repeat(6_000)}` }],
+			timestamp: Date.now() - 2,
+		});
+		sessionManager.appendMessage(fauxAssistantMessage(`historical response ${"y".repeat(6_000)}`));
+		const resourceLoader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			settingsManager,
+			extensionFactories: [{ name: "online-context-compact-reissue-test", factory: extension }],
+			noExtensions: true,
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+			noContextFiles: true,
+			systemPrompt: "You are a deterministic lifecycle test assistant.",
+		});
+		await resourceLoader.reload();
+		expect(resourceLoader.getExtensions().errors).toEqual([]);
+
+		const created = await createAgentSession({
+			cwd,
+			agentDir,
+			model: faux.getModel(),
+			thinkingLevel: "off",
+			tools: ["update_plan"],
+			resourceLoader,
+			sessionManager,
+			settingsManager,
+		});
+		session = created.session;
+		let settledCount = 0;
+		session.subscribe((event) => {
+			if (event.type === "agent_settled") settledCount++;
+		});
+
+		await session.prompt("finish the current plan step", {
+			expandPromptTemplates: false,
+			source: "interactive",
+		});
+
+		expect(compactionRequests).toEqual([
+			{
+				customInstructions: expect.stringContaining('"stepId":"build","goal":"build it"'),
+				reason: "manual",
+			},
+		]);
+		const branch = sessionManager.getBranch();
+		expect(branch.filter((entry) => entry.type === "compaction")).toHaveLength(1);
+		expect(
+			branch.filter(
+				(entry) =>
+					(entry.type === "custom_message" &&
+						entry.customType === "sol-pi-online-context-compact" &&
+						entry.content === POST_COMPACTION_PLAN_REMINDER &&
+						entry.display === false),
+			),
+		).toHaveLength(1);
+		expect(faux.state.callCount).toBe(3 + reissuedPlans.length);
+		expect(session.getLastAssistantText()).toBe(finalReply);
+		expect(settledCount).toBe(2);
+		expect(session.isStreaming).toBe(false);
+		expect(session.isIdle).toBe(true);
+	} finally {
+		session?.dispose();
+		await rm(cwd, { recursive: true, force: true });
+	}
+}
+
 describe("Online Context Compact with a real AgentSession", () => {
 	it("settles the automatic continuation before the original prompt returns", async () => {
 		await runCompactionScenario(1);
@@ -175,5 +305,17 @@ describe("Online Context Compact with a real AgentSession", () => {
 
 	it("settles two consecutive automatic compactions before the original prompt returns", async () => {
 		await runCompactionScenario(2);
+	}, 10_000);
+
+	it("compacts once when the post-compaction reminder re-states the identical plan", async () => {
+		await runPostCompactionRestatementScenario([DONE, DONE, DONE]);
+	}, 10_000);
+
+	it("compacts once despite repeated re-keyed completed plans past the cooldown", async () => {
+		await runPostCompactionRestatementScenario([
+			REKEYED,
+			REKEYED.map((step) => ({ ...step, id: "renamed-again" })),
+			REKEYED.map((step) => ({ ...step, id: "renamed-once-more" })),
+		]);
 	}, 10_000);
 });

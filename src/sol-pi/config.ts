@@ -131,5 +131,5 @@ function stringConfigValue(
 	if (typeof value !== "string" || value.trim().length === 0) {
 		throw new Error(`SoL-Pi config ${key} must be a non-empty string: ${path}`);
 	}
-	return value;
+	return value.trim();
 }

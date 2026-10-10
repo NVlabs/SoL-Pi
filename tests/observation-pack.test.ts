@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	createObservationPackExtension,
@@ -15,6 +16,7 @@ import {
 	THRESHOLD_BYTES,
 } from "../src/sol-pi/extensions/observation-pack/index.ts";
 import { componentText, FakePi, FakeSessionManager, fakeContext, plainTheme } from "./helpers.ts";
+import { runtimeRoot } from "../src/sol-pi/runtime-paths.ts";
 
 const roots: string[] = [];
 const SESSION_ID = "session-a";
@@ -92,6 +94,31 @@ function captureConsoleErrors(): string[] {
 }
 
 describe("observation pack", () => {
+	it("archives and recalls large observations without a session directory", async () => {
+		const manager = SessionManager.inMemory();
+		const context = fakeContext("", { sessionManager: manager });
+		const root = runtimeRoot(context);
+		roots.push(root);
+		const body = `in-memory observation\n${repeatPastThreshold("recall bytes\n")}`;
+		const message = toolResult(body);
+		const pi = observationPackPi();
+		for (let index = 0; index < FULL_SENDS; index++) {
+			expect(resultText((await pi.emitContext([message], context))[0]!)).toBe(body);
+		}
+		const placeholder = resultText((await pi.emitContext([message], context))[0]!);
+		const id = placeholder.match(/id: (obs_[a-f0-9]{24})/u)?.[1];
+		expect(id).toBeTruthy();
+		expect(await readFile(join(root, "observation-pack", "objects", `${id}.txt`), "utf8")).toBe(body);
+		const recalled = await observationPackPi().tool("obs_recall").execute(
+			"recall-memory", { id, offset: 0 }, undefined, undefined,
+			fakeContext("", { sessionManager: manager }),
+		);
+		expect(recalled.content).toEqual(expect.arrayContaining([
+			expect.objectContaining({ type: "text", text: expect.stringContaining("in-memory observation") }),
+		]));
+		expect(manager.getSessionFile()).toBeUndefined();
+	});
+
 	it("registers its public surface without legacy environment flags", () => {
 		const pi = observationPackPi();
 		expect(pi.handlers.has("context")).toBe(true);
