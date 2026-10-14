@@ -112,6 +112,10 @@ export async function executeMutationThenRun<TDetails>({
 		try {
 			const bashResult = await bash.execute(`${toolCallId}:then_run`, thenRun, signal, undefined, ctx);
 			const output = resultText(bashResult);
+			// Pi >= 1.0 reports a non-zero exit as a resolved isError result instead of throwing.
+			if ((bashResult as { isError?: boolean }).isError === true) {
+				throw new Error(output || "command failed");
+			}
 			return {
 				...mutationResult,
 				content: [
