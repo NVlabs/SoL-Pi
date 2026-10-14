@@ -11,6 +11,8 @@ export type CompactionEconomics = {
 	readonly subsequentCompactionMargin: number;
 	/** Minimum provider requests since the last compaction before economics may compact again. */
 	readonly minimumRequestsSinceCompaction: number;
+	/** Minimum share of the context window (0..1) that economics may compact below. `0` disables the floor. */
+	readonly minContextRatio: number;
 };
 
 export const DEFAULT_COMPACTION_ECONOMICS: CompactionEconomics = Object.freeze({
@@ -20,6 +22,7 @@ export const DEFAULT_COMPACTION_ECONOMICS: CompactionEconomics = Object.freeze({
 	firstCompactionRequestScale: 2,
 	subsequentCompactionMargin: 1.5,
 	minimumRequestsSinceCompaction: 2,
+	minContextRatio: 0,
 });
 
 export type CompactionReason =
@@ -29,6 +32,7 @@ export type CompactionReason =
 	| "deferred_subsequent_margin"
 	| "deferred_carried_debt"
 	| "deferred_post_compaction_cooldown"
+	| "deferred_below_context_floor"
 	| "horizon_unavailable"
 	| "cache_ratio_unavailable"
 	| "native_not_compactable"
@@ -208,7 +212,11 @@ export function decideCompaction(input: {
 		input.requestsSinceLastCompaction !== undefined &&
 		input.requestsSinceLastCompaction < input.economics.minimumRequestsSinceCompaction;
 	// Window protection stays absolute: near the context limit, compact even in cooldown.
-	const economicAllowed = economic && !cooldownActive;
+	const belowContextFloor =
+		input.economics.minContextRatio > 0 &&
+		input.contextWindowTokens !== null &&
+		input.contextTokens < input.contextWindowTokens * input.economics.minContextRatio;
+	const economicAllowed = economic && !cooldownActive && !belowContextFloor;
 	const compact = compressible && (windowProtection || economicAllowed);
 
 	return {
@@ -242,6 +250,8 @@ export function decideCompaction(input: {
 				? "window_protection"
 				: economic && cooldownActive
 					? "deferred_post_compaction_cooldown"
+					: economic && belowContextFloor
+						? "deferred_below_context_floor"
 					: economic
 					? "economic"
 					: horizon === null

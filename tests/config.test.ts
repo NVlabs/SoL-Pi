@@ -113,6 +113,19 @@ describe("SoL-Pi config", () => {
 		}
 	});
 
+	it("defaults the context floor to disabled", () => {
+		expect(DEFAULT_CONFIG.minContextRatio).toBe(0);
+	});
+
+	it("loads an explicit context floor, including the extremes", () => {
+		for (const minContextRatio of [0, 0.75, 1]) {
+			const { agentDir, cwd } = fixture();
+			const path = join(agentDir, "sol-pi.json");
+			writeFileSync(path, JSON.stringify({ version: 1, minContextRatio }));
+			expect(loadSolPiConfig(cwd, agentDir, true).minContextRatio).toBe(minContextRatio);
+		}
+	});
+
 	it("loads an explicit Evidence-Preserving Reducer provider/model route", () => {
 		const { agentDir, cwd } = fixture();
 		const path = join(agentDir, "sol-pi.json");
@@ -171,6 +184,18 @@ describe("SoL-Pi config", () => {
 			"SoL-Pi config cacheWriteReadRatio must be a finite non-negative number",
 		);
 	});
+
+	it.each([null, "0.75", -0.1, 1.5, Number.NaN])(
+		"rejects an invalid context floor: %j",
+		(minContextRatio) => {
+			const { agentDir, cwd } = fixture();
+			const path = join(agentDir, "sol-pi.json");
+			writeFileSync(path, JSON.stringify({ version: 1, minContextRatio }));
+			expect(() => loadSolPiConfig(cwd, agentDir, true)).toThrow(
+				"SoL-Pi config minContextRatio must be a finite number between 0 and 1",
+			);
+		},
+	);
 
 	it("wraps malformed JSON errors with the config path", () => {
 		const { agentDir, cwd } = fixture();
