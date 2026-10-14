@@ -11,7 +11,11 @@ import type { TextContent, ToolResultMessage } from "@earendil-works/pi-ai";
 
 /** Only tool results larger than this participate. */
 export const THRESHOLD_BYTES = 10 * 1024;
-/** Provider requests that still carry the full payload before the placeholder takes over. */
+/**
+ * Default provider requests that still carry the full payload before the
+ * placeholder takes over. Configurable with `observationPackFullSends` in
+ * `sol-pi.json`; see docs/configuration.md for the prompt-cache trade-off.
+ */
 export const FULL_SENDS = 2;
 /** Placeholder excerpt budget, split evenly between head and tail, whole lines only. */
 export const PLACEHOLDER_EXCERPT_BYTES = 1024;
@@ -175,13 +179,19 @@ function completeLineExcerpt(text: string, budgetBytes: number, fromEnd: boolean
 	return selected.join("");
 }
 
-export function placeholderFor(observation: Observation): string {
+export function placeholderFor(observation: Observation, fullSends: number = FULL_SENDS): string {
 	const headBudget = Math.floor(PLACEHOLDER_EXCERPT_BYTES / 2);
 	const tailBudget = PLACEHOLDER_EXCERPT_BYTES - headBudget;
 	const head = completeLineExcerpt(observation.text, headBudget, false);
 	const tail = completeLineExcerpt(observation.text, tailBudget, true);
+	// The projected text must not change between provider requests while the
+	// prefix cache is alive, so the wording records the policy that produced it.
+	const replacementNote =
+		fullSends > 0
+			? `replaced after its first ${fullSends} provider requests`
+			: "replaced from the first provider request";
 	return [
-		`[large tool result replaced after its first ${FULL_SENDS} provider requests]`,
+		`[large tool result ${replacementNote}]`,
 		`id: ${observation.id}`,
 		`tool: ${observation.toolName}`,
 		`original_bytes: ${observation.bytes}`,

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_CONFIG, findConfigPath, loadSolPiConfig } from "../src/sol-pi/config.ts";
+import { DEFAULT_CONFIG, findConfigPath, loadSolPiConfig, DEFAULT_OBSERVATION_PACK_FULL_SENDS } from "../src/sol-pi/config.ts";
 import {
 	DEFAULT_REDUCER_MODEL,
 	DEFAULT_REDUCER_PROVIDER,
@@ -113,6 +113,23 @@ describe("SoL-Pi config", () => {
 		}
 	});
 
+	it("loads an explicit Observation Pack full-send count, including zero", () => {
+		for (const observationPackFullSends of [0, 1, 5]) {
+			const { agentDir, cwd } = fixture();
+			const path = join(agentDir, "sol-pi.json");
+			writeFileSync(path, JSON.stringify({ version: 1, observationPackFullSends }));
+			expect(loadSolPiConfig(cwd, agentDir, true).observationPackFullSends).toBe(observationPackFullSends);
+		}
+	});
+
+	it("defaults the Observation Pack full-send count", () => {
+		const { agentDir, cwd } = fixture();
+		expect(DEFAULT_CONFIG.observationPackFullSends).toBe(DEFAULT_OBSERVATION_PACK_FULL_SENDS);
+		expect(loadSolPiConfig(cwd, agentDir, true).observationPackFullSends).toBe(
+			DEFAULT_OBSERVATION_PACK_FULL_SENDS,
+		);
+	});
+
 	it("loads an explicit Evidence-Preserving Reducer provider/model route", () => {
 		const { agentDir, cwd } = fixture();
 		const path = join(agentDir, "sol-pi.json");
@@ -171,6 +188,18 @@ describe("SoL-Pi config", () => {
 			"SoL-Pi config cacheWriteReadRatio must be a finite non-negative number",
 		);
 	});
+
+	it.each([null, "2", -1, 1.5])(
+		"rejects an invalid Observation Pack full-send count: %j",
+		(observationPackFullSends) => {
+			const { agentDir, cwd } = fixture();
+			const path = join(agentDir, "sol-pi.json");
+			writeFileSync(path, JSON.stringify({ version: 1, observationPackFullSends }));
+			expect(() => loadSolPiConfig(cwd, agentDir, true)).toThrow(
+				"SoL-Pi config observationPackFullSends must be a non-negative integer",
+			);
+		},
+	);
 
 	it("wraps malformed JSON errors with the config path", () => {
 		const { agentDir, cwd } = fixture();

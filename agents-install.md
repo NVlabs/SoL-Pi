@@ -89,11 +89,14 @@ SoL-Pi defaults every mechanism to disabled. For this managed installation, crea
   "evidencePreservingReducerProvider": "provider-id",
   "evidencePreservingReducerModel": "model-id",
   "onlineContextCompact": true,
+  "observationPackFullSends": 2,
   "cacheWriteReadRatio": 12.5
 }
 ```
 
 `evidencePreservingReducerProvider` and `evidencePreservingReducerModel` select the nested reducer route that Evidence-Preserving Reducer resolves through Pi's model registry. They default to the built-in reducer route and must be non-empty strings when supplied. Change them only when a different reducer model is intended.
+
+`observationPackFullSends` is the number of provider requests that still carry a large tool result in full before Observation Pack replaces it with the placeholder. It defaults to `2` and accepts any non-negative integer. The value must be an integer because it is compared against a per-observation request counter. Set it to `0` when the provider bills prompt caching and the context is large: the first replacement is what invalidates the cached prefix from that point onward, so projecting the placeholder from the first request keeps the prefix stable. See [Configuration](docs/configuration.md#observationpackfullsends).
 
 `cacheWriteReadRatio` is the only pricing-related input SoL-Pi reads. It defaults to `12.5`, accepts any finite non-negative number, and treats `0` as an explicit statement that a cache write adds no cost relative to a cache read. SoL-Pi does not inspect Pi model prices. The value controls one compaction decision and is not a bill estimate. The default follows the GPT-5.6 Sol OpenAI Standard cache-write/read ratio checked on 2026-08-21; see [OpenAI API pricing](https://developers.openai.com/api/docs/pricing). Change it when a different policy is required.
 
@@ -136,7 +139,7 @@ Report:
 - repository state before and after installation;
 - Node, npm, and Pi versions;
 - install scope and the exact entry shown by `pi list`;
-- effective config path, four enabled flags, EPR reducer provider/model, and `cacheWriteReadRatio`, without secrets;
+- effective config path, four enabled flags, EPR reducer provider/model, `observationPackFullSends`, and `cacheWriteReadRatio`, without secrets;
 - every validation command and result;
 - any blocker or deviation.
 
