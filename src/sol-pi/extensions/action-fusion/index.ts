@@ -42,6 +42,15 @@ const EDIT_THEN_RUN_DESCRIPTION =
 const WRITE_THEN_RUN_DESCRIPTION =
 	"Command to run next on this file after the write succeeds — e.g. run, build, start/restart, install, or check it; optional timeout in seconds. Skipped if the write fails; a non-zero exit is reported but keeps the write.";
 
+// Pi's public getAllTools() exposes the registered parameter objects. Track
+// identity rather than trusting a tool name, a same-named field, or a path suffix.
+const fusedParameters = new WeakMap<object, string>();
+
+export function isActionFusionTool(tool: { name: string; parameters?: unknown }): boolean {
+	return typeof tool.parameters === "object" && tool.parameters !== null
+		&& fusedParameters.get(tool.parameters) === tool.name;
+}
+
 export interface ActionFusionOptions {
 	/** Optional programmatic bash overrides, primarily for tests and embedded runtimes. */
 	readonly bashOptions?: BashToolOptions;
@@ -82,6 +91,9 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 			...writeTemplate.parameters.properties,
 			then_run: createThenRunSchema(WRITE_THEN_RUN_DESCRIPTION),
 		});
+
+		fusedParameters.set(editParameters, "edit");
+		fusedParameters.set(writeParameters, "write");
 
 		pi.registerTool<typeof editParameters, EditToolDetails | undefined>({
 			...editTemplate,
