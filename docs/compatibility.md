@@ -1,12 +1,15 @@
 # Pi Compatibility
 
-SoL-Pi is developed and tested against `@earendil-works/pi-coding-agent` 0.85.1 and remains compatible with the originally supported 0.84.2 release. The current 19 test files (140 tests), type checking, package inspection, public API checks, and offline extension startup passed on both releases. Previous checks covered the public API surface of Pi 0.81.1, the base used by the original Pi fork; they are not a current full-suite compatibility guarantee. The runtime range is deliberately expressed as a peer dependency because Pi owns installation and upgrade of its packages; it is not a guarantee for every Pi version.
+SoL-Pi is currently developed and tested against `@earendil-works/pi-coding-agent` 1.2.0. The latest Windows 11 / Node 24 verification passed type checking, public API checks, package inspection, and all 22 test files: 197 tests passed and 3 platform-capability tests were skipped. Git Bash was placed on the test process's `PATH` for low-level tests that create Bash tools directly rather than using the configured extension entrypoint. Live fused write/edit follow-ups also passed, including a non-zero-exit failure receipt that preserved the successful file mutation.
+
+Earlier compatibility runs covered Pi 1.1.0, 0.85.1, and 0.84.2; these are historical results, not a claim that the new shell-settings bridge has been re-tested against every older release. Previous public API checks also covered Pi 0.81.1, the base used by the original Pi fork. The runtime range is deliberately expressed as a peer dependency because Pi owns installation and upgrade of its packages; it is not a guarantee for every Pi version.
 
 SoL-Pi imports only public package exports:
 
 - `createEditToolDefinition`
 - `createWriteToolDefinition`
 - `createBashToolDefinition`
+- `SettingsManager.create()`, `getShellPath()`, and `getShellCommandPrefix()`
 - extension types and `ExtensionAPI.registerTool`
 - `context`, `before_provider_request`, `tool_result`, `turn_end`, `agent_settled`, and `session_before_tree` extension events
 - native compaction events, `ExtensionContext.getContextUsage()`, and `ExtensionContext.compact()`
@@ -20,6 +23,10 @@ The built-in edit/write definitions capture their working directory, so SoL-Pi c
 Action Fusion decodes `file://` targets with Node's `fileURLToPath()` before resolving the queue and hash-check path. This keeps file URLs, including percent-encoded filenames and Pi's optional `@` prefix, aligned with the file handled by the built-in mutation tool.
 
 On Windows it applies the same drive-path conversion Pi's own resolver applies, so Git Bash, MSYS, Cygwin, and WSL targets such as `/c/src/app.ts` and home-relative `~\` paths resolve to the file the built-in mutation tool wrote. On other platforms those inputs keep their POSIX meaning.
+
+Pi 1.x can return an `AgentToolResult` with `isError` instead of throwing. Action Fusion treats both a thrown error and an `isError` follow-up result as failure; it does not emit `[then_run:succeeded]` for a failed command.
+
+At extension startup, Action Fusion reads Pi's file-backed `shellPath` and `shellCommandPrefix` through the public `SettingsManager`, respecting project trust, and passes them to the built-in Bash tool. On native Windows this allows a custom Git Bash installation to be selected without falling back to a legacy WSL `bash.exe`. SDK/CLI in-memory shell overrides are not available through this file-backed bridge; embedded callers can pass explicit `bashOptions` to the Action Fusion factory.
 
 The queue covers only fused operations registered by this SoL-Pi instance. External processes, direct built-in-tool calls outside the replacement, and unrelated extensions are not globally locked. SoL-Pi hashes the target immediately before launching `then_run` and skips the command if it observes an intervening content change.
 
@@ -72,4 +79,4 @@ The test suite drives every extension through the same public `ExtensionAPI` and
 
 `tests/pi-package-integration.test.ts` loads the actual TypeScript entrypoint through Pi's `DefaultResourceLoader`, reads a trusted all-enabled project configuration, and executes a fused write/command and a plan update in a real `AgentSession`. `tests/online-context-compact-agent-session.test.ts` verifies one and two consecutive native compactions and waits for automatic continuation before the original prompt returns. These integration tests use Pi's deterministic faux provider; they verify runtime compatibility, not live provider authentication or token savings.
 
-The 0.84.2 backward-compatibility run used an isolated copy of the current source and tests, separate dependencies, and an empty Pi agent directory. Only the copy's four Pi development dependency versions, lockfile, and installation-guide version mentions changed. No source or test changes were needed. The run included all four mechanisms and the native compaction/continuation integration tests; it did not repeat live-provider benchmarks on 0.84.2.
+The earlier 0.84.2 backward-compatibility run used an isolated copy of the then-current source and tests, separate dependencies, and an empty Pi agent directory. Only the copy's four Pi development dependency versions, lockfile, and installation-guide version mentions changed. No source or test changes were needed. The run included all four mechanisms and the native compaction/continuation integration tests; it did not repeat live-provider benchmarks on 0.84.2.
