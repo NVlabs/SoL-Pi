@@ -157,6 +157,7 @@ export type { ThenRunInput } from "./then-run.ts";
 export {
 	assertUnchangedBeforeCommand,
 	executeMutationThenRun,
+	thenRunCommandFailed,
 	THEN_RUN_FAILED,
 	THEN_RUN_SKIPPED,
 	THEN_RUN_SUCCEEDED,
