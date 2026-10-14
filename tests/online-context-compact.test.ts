@@ -54,6 +54,11 @@ function assistant(text: string): AgentMessage {
 	};
 }
 
+// OMP can return prompt segments even though Pi's public type only allows a string
+function systemPromptGetter(prompt: string | readonly string[]): ExtensionContext["getSystemPrompt"] {
+	return (() => prompt) as ExtensionContext["getSystemPrompt"];
+}
+
 async function runPlan(pi: FakePi, context: ExtensionContext, id: string, params: unknown) {
 	const execute = pi.tool("update_plan").execute as (
 		toolCallId: string,
@@ -97,6 +102,26 @@ describe("Online Context Compact extension", () => {
 		await pi.emit("session_start", { type: "session_start" }, context);
 		const messages = [assistant("unchanged")];
 		expect(await pi.emitContext(messages, context)).toEqual(messages);
+	});
+
+	it.each([
+		{ name: "string", prompt: "abcde", tokens: 2 },
+		{ name: "empty string", prompt: "", tokens: 0 },
+		{ name: "multiline string", prompt: "a\nb\nc", tokens: 2 },
+		{ name: "empty array", prompt: [], tokens: 0 },
+		{ name: "single segment", prompt: ["abcde"], tokens: 2 },
+		{ name: "readonly segments", prompt: Object.freeze(["a", "b", "c"]), tokens: 2 },
+		{ name: "UTF-8 segments", prompt: ["你好", "🌍"], tokens: 3 },
+	])("estimates $name system prompts before provider requests", async ({ prompt, tokens }) => {
+		const pi = new FakePi();
+		registerOnlineContextCompact(pi.asExtensionApi());
+		const context = fakeContext(pi.sessionManager, { getSystemPrompt: systemPromptGetter(prompt) });
+		await pi.emit("session_start", { type: "session_start" }, context);
+		await pi.emit("before_provider_request", { type: "before_provider_request", payload: {} }, context);
+		expect(restoreOnlineState(pi.sessionManager.entries)).toMatchObject({
+			requestCount: 1,
+			lastContextTokens: tokens,
+		});
 	});
 
 	it.each([0, 3])("records real progress on the first plan update after compaction, following %s work requests", async (workRequests) => {
@@ -250,7 +275,10 @@ describe("Online Context Compact extension", () => {
 		});
 	});
 
-	it("stops at an eligible completed-step boundary, then compacts after settlement", async () => {
+	it.each([
+		{ name: "string", prompt: "test\nprompt" },
+		{ name: "array", prompt: Object.freeze(["test", "prompt"]) },
+	])("compacts after settlement at a completed-step boundary with a $name system prompt", async ({ prompt }) => {
 		const manager = new FakeSessionManager();
 		manager.appendMessage({ role: "user", content: `old ${"x".repeat(8_000)}`, timestamp: Date.now() });
 		manager.appendMessage(assistant(`work ${"y".repeat(2_000)}`));
@@ -301,7 +329,7 @@ describe("Online Context Compact extension", () => {
 			abort,
 			compact,
 			isIdle: () => idle,
-			getSystemPrompt: () => "test prompt",
+			getSystemPrompt: systemPromptGetter(prompt),
 			getContextUsage: () => ({ tokens: 195_000, contextWindow: 200_000, percent: 97.5 }),
 		});
 
