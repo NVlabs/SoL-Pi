@@ -321,7 +321,7 @@ describe("evidence-preserving reducer", () => {
 		expect(events.filter((entry) => entry.kind === "applied")).toHaveLength(1);
 		expect(notify).toHaveBeenCalledTimes(1);
 		expect(notify.mock.calls[0]?.[0]).toMatch(
-			/^⚡ SoL-Pi · Luna Delegating\nMoney saved · .+ removed from future prompts$/u,
+			/^⚡ SoL-Pi · Evidence Reducer\nMoney saved · .+ removed from future prompts$/u,
 		);
 	});
 
