@@ -62,6 +62,9 @@ async function exactBodyFromInline(inline: string, details: unknown): Promise<st
  * command output appended by a fused `edit`/`write` call.
  */
 export async function reducibleToolResult(event: ToolResultEvent): Promise<ReducibleToolResult | undefined> {
+	// Nested results are consumed by tools (including codemode), not the model.
+	// Replacing their content would discard Pi's structured execution result.
+	if (event.parentToolCallId !== undefined) return undefined;
 	if (event.toolName === "bash") {
 		const command = typeof event.input.command === "string" ? event.input.command : "";
 		if (!command) return undefined;

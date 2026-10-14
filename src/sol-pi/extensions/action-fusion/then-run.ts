@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { type BashToolOptions, createBashToolDefinition, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { type BashToolOptions, createBashToolDefinition, type ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { withFusedFileQueue } from "./file-queue.ts";
 
@@ -90,12 +90,15 @@ export async function executeMutationThenRun<TDetails>({
 	mutate: () => Promise<AgentToolResult<TDetails>>;
 	bashOptions: BashToolOptions | undefined;
 	signal: AbortSignal | undefined;
-	ctx: ExtensionContext;
+	ctx: ExtensionToolContext;
 }): Promise<AgentToolResult<TDetails>> {
 	return withFusedFileQueue(absolutePath, async () => {
 		let mutationResult: AgentToolResult<TDetails>;
 		try {
 			mutationResult = await mutate();
+			if (mutationResult.isError) {
+				throw new Error(resultText(mutationResult) || "The file mutation failed.");
+			}
 		} catch (error) {
 			if (thenRun !== undefined) {
 				throw thenRunSkippedError(error);
@@ -112,6 +115,10 @@ export async function executeMutationThenRun<TDetails>({
 		try {
 			const bashResult = await bash.execute(`${toolCallId}:then_run`, thenRun, signal, undefined, ctx);
 			const output = resultText(bashResult);
+			// Pi 1.2 returns non-zero exits as resolved error results, not rejections.
+			if (bashResult.isError) {
+				throw new Error(output || "The follow-up command failed.");
+			}
 			return {
 				...mutationResult,
 				content: [

@@ -4,7 +4,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import type { AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
@@ -181,6 +181,24 @@ function load(
 }
 
 describe("evidence-preserving reducer", () => {
+	it.each(["bash", "write", "edit"])("leaves nested %s results intact for the calling tool", async (toolName) => {
+		const root = await storeRoot();
+		const body = `ERROR test target failed\n${"diagnostic output\n".repeat(400)}`;
+		const complete = vi.fn();
+		const { context, manager, pi } = load(root, complete);
+		const event = toolName === "bash" ? bashEvent(body) : fusedEvent(body, true);
+		event.toolName = toolName;
+		event.parentToolCallId = "codemode-parent";
+		event.structuredContent = { output: body, exit_code: 7, truncated: false };
+		const original = structuredClone(event);
+
+		expect(await pi.emit("tool_result", event, context)).toBeUndefined();
+		expect(event).toEqual(original);
+		expect(complete).not.toHaveBeenCalled();
+		expect(manager.entries).toEqual([]);
+		expect(await readdir(root)).toEqual([]);
+	});
+
 	it("reduces and preserves evidence for an in-memory session", async () => {
 		const sessionManager = SessionManager.inMemory();
 		const signal = "ERROR in-memory worker failed";
@@ -226,11 +244,15 @@ describe("evidence-preserving reducer", () => {
 			})),
 		);
 
-		const result = (await pi.emit("tool_result", bashEvent(body), context)) as {
+		const result = (await pi.emit("tool_result", bashEvent(body, {
+			structuredContent: { output: body, exit_code: 7, truncated: false },
+		}), context)) as {
 			content: { type: string; text: string }[];
 			details: Record<string, unknown>;
 		};
 
+		// Pi drops the original structured payload when we replace direct-call content.
+		expect(result).not.toHaveProperty("structuredContent");
 		expect(result.content[0]?.text ?? "").toMatch(/^sol_pi_evidence_receipt_v1\n/u);
 		expect(REDUCER_RECEIPT_SCHEMA).toBe("sol-pi-evidence-receipt/1");
 		expect(Object.keys(result.details)).toContain("evidencePreservingReducer");

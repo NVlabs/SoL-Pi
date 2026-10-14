@@ -6,14 +6,15 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { BashOperations, ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { BashOperations, ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
 	type ActionFusionOptions,
 	assertUnchangedBeforeCommand,
 	createActionFusionExtension,
+	executeMutationThenRun,
 } from "../src/sol-pi/extensions/action-fusion/index.ts";
 import { withFusedFileQueue } from "../src/sol-pi/extensions/action-fusion/file-queue.ts";
-import { componentText, plainTheme } from "./helpers.ts";
+import { componentText, fakeContext, plainTheme } from "./helpers.ts";
 
 function delay(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
@@ -53,19 +54,8 @@ function loadFusedTools(options?: ActionFusionOptions): FusedTools {
 	return { edit, write };
 }
 
-function createContext(cwd: string, overrides: Partial<ExtensionContext> = {}): ExtensionContext {
-	return {
-		mode: "json",
-		hasUI: false,
-		cwd,
-		model: undefined,
-		sessionManager: {
-			getSessionFile: () => undefined,
-			getSessionId: () => "action-fusion-test",
-		},
-		ui: {},
-		...overrides,
-	} as unknown as ExtensionContext;
+function createContext(cwd: string, overrides: Partial<ExtensionToolContext> = {}): ExtensionToolContext {
+	return fakeContext(cwd, { cwd, ...overrides });
 }
 
 const tempDirs: string[] = [];
@@ -246,27 +236,73 @@ describe("action fusion then_run", () => {
 		expect(await readFile(filePath, "utf8")).toBe("plain\n");
 	});
 
-	it("preserves a successful mutation when then_run fails", async () => {
+	it.each(["write", "edit"] as const)("preserves a successful %s when then_run returns an error result", async (name) => {
 		const dir = await createTempDir();
 		const filePath = join(dir, "preserved.txt");
+		await writeFile(filePath, "before\n");
+		const notify = vi.fn();
 		const operations: BashOperations = {
 			exec: async (_command, _cwd, { onData }) => {
 				onData(Buffer.from("validation failed\n"));
 				return { exitCode: 7 };
 			},
 		};
-		const { write } = loadFusedTools({ bashOptions: { operations } });
+		const tool = loadFusedTools({ bashOptions: { operations } })[name];
+		const params = name === "write"
+			? { path: filePath, content: "keep me\n", then_run: { command: "exit 7" } }
+			: { path: filePath, edits: [{ oldText: "before", newText: "keep me" }], then_run: { command: "exit 7" } };
 
 		await expect(
-			write.execute(
-				"write-2",
-				{ path: filePath, content: "keep me\n", then_run: { command: "exit 7" } },
+			tool.execute(
+				"mutation-failure",
+				params,
 				undefined,
 				undefined,
-				createContext(dir),
+				createContext(dir, { mode: "tui", hasUI: true, ui: { notify, setStatus: vi.fn() } as never }),
 			),
-		).rejects.toThrow("[then_run:failed]");
+		).rejects.toThrow(/\[then_run:failed\][\s\S]*validation failed[\s\S]*Command exited with code 7/);
 		expect(await readFile(filePath, "utf8")).toBe("keep me\n");
+		expect(notify).not.toHaveBeenCalled();
+	});
+
+	it("does not interpret failure-looking command output as an exit status", async () => {
+		const dir = await createTempDir();
+		const { write } = loadFusedTools({ bashOptions: { operations: {
+			exec: async (_command, _cwd, { onData }) => {
+				onData(Buffer.from("Command exited with code 7\n"));
+				return { exitCode: 0 };
+			},
+		} } });
+		const result = await write.execute("success", {
+			path: "output.txt", content: "ok", then_run: { command: "print diagnostic text" },
+		}, undefined, undefined, createContext(dir));
+		expect(text(result)).toContain("[then_run:succeeded]");
+	});
+
+	it("skips the command when a mutation resolves with isError", async () => {
+		const dir = await createTempDir();
+		const exec = vi.fn(async () => ({ exitCode: 0 }));
+		await expect(executeMutationThenRun({
+			toolCallId: "failed-mutation",
+			absolutePath: join(dir, "missing.txt"),
+			thenRun: { command: "must not run" },
+			mutate: async () => ({ content: [{ type: "text", text: "Mutation denied" }], details: undefined, isError: true }),
+			bashOptions: { operations: { exec } },
+			signal: undefined,
+			ctx: createContext(dir),
+		})).rejects.toThrow(/Mutation denied[\s\S]*\[then_run:skipped\]/);
+		expect(exec).not.toHaveBeenCalled();
+	});
+
+	it.each(["aborted", "timeout:1"])("preserves the mutation when bash throws %s", async (reason) => {
+		const dir = await createTempDir();
+		const { write } = loadFusedTools({ bashOptions: { operations: {
+			exec: async () => { throw new Error(reason); },
+		} } });
+		await expect(write.execute("interrupted", {
+			path: "preserved.txt", content: "keep me", then_run: { command: "check" },
+		}, undefined, undefined, createContext(dir))).rejects.toThrow("[then_run:failed]");
+		expect(await readFile(join(dir, "preserved.txt"), "utf8")).toBe("keep me");
 	});
 
 	it("skips then_run and reports it when the mutation fails", async () => {
