@@ -112,6 +112,10 @@ export async function executeMutationThenRun<TDetails>({
 		try {
 			const bashResult = await bash.execute(`${toolCallId}:then_run`, thenRun, signal, undefined, ctx);
 			const output = resultText(bashResult);
+			// Newer Pi hosts return failed command results instead of throwing.
+			if ("isError" in bashResult && bashResult.isError === true) {
+				throw new Error(output || "Command failed.");
+			}
 			return {
 				...mutationResult,
 				content: [
