@@ -4,7 +4,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import type { AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
@@ -82,6 +82,20 @@ async function storeRoot(): Promise<string> {
 	cleanupPaths.push(value);
 	return value;
 }
+
+it("rejects a symlink in place of an existing content-addressed archive object", async () => {
+	const root = await storeRoot();
+	const body = `ERROR symlink archive\n${"diagnostic\n".repeat(400)}`;
+	const first = await archiveBody(root, body);
+	const target = join(root, "same-content-target.txt");
+	await writeFile(target, body, "utf8");
+	await rm(first.path);
+	await symlink(target, first.path);
+
+	await expect(archiveBody(root, body)).rejects.toThrow(
+		process.platform === "win32" ? /atomic no-follow archive access is unavailable/u : /not a regular file/u,
+	);
+});
 
 function bashEvent(body: string, overrides: Partial<ToolResultEvent> = {}): ToolResultEvent {
 	return {
