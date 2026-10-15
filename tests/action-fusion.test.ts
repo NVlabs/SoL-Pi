@@ -174,6 +174,61 @@ describe("action fusion then_run", () => {
 		expect(text(result)).toContain("write check passed");
 	});
 
+	it("passes the configured shell path to then_run without spawning it", async () => {
+		const dir = await createTempDir();
+		const filePath = join(dir, "configured-shell.txt");
+		const shellPath = join(dir, "configured-shell");
+		const loadShellPath = vi.fn(() => shellPath);
+		const createBashToolDefinition = vi.fn((_cwd, options) => ({
+			name: "bash",
+			execute: async () => ({
+				content: [{ type: "text" as const, text: "configured shell propagated\n" }],
+				details: undefined,
+			}),
+		})) as unknown as NonNullable<ActionFusionOptions["createBashToolDefinition"]>;
+		const { write } = loadFusedTools({ loadShellPath, createBashToolDefinition });
+		const ctx = createContext(dir, { isProjectTrusted: () => false });
+
+		const result = await write.execute(
+			"write-shell-path",
+			{ path: filePath, content: "content\n", then_run: { command: "check shell" } },
+			undefined,
+			undefined,
+			ctx,
+		);
+
+		expect(loadShellPath).toHaveBeenCalledOnce();
+		expect(loadShellPath).toHaveBeenCalledWith(ctx);
+		expect(createBashToolDefinition).toHaveBeenCalledWith(dir, { shellPath });
+		expect(text(result)).toContain("configured shell propagated");
+	});
+
+	it("keeps explicit bash options ahead of configured shell settings", async () => {
+		const dir = await createTempDir();
+		const explicitOptions = { shellPath: join(dir, "explicit-shell") };
+		const loadShellPath = vi.fn(() => join(dir, "settings-shell"));
+		const createBashToolDefinition = vi.fn((_cwd, options) => ({
+			name: "bash",
+			execute: async () => ({ content: [], details: undefined }),
+		})) as unknown as NonNullable<ActionFusionOptions["createBashToolDefinition"]>;
+		const { write } = loadFusedTools({
+			bashOptions: explicitOptions,
+			loadShellPath,
+			createBashToolDefinition,
+		});
+
+		await write.execute(
+			"write-explicit-shell",
+			{ path: "explicit.txt", content: "content\n", then_run: { command: "check shell" } },
+			undefined,
+			undefined,
+			createContext(dir),
+		);
+
+		expect(loadShellPath).not.toHaveBeenCalled();
+		expect(createBashToolDefinition).toHaveBeenCalledWith(dir, explicitOptions);
+	});
+
 	it("announces savings only after a fused command succeeds in TUI mode", async () => {
 		const dir = await createTempDir();
 		const notify = vi.fn();
