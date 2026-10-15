@@ -85,7 +85,7 @@ export function createObservationPackExtension(): ExtensionFactory {
 					throw error;
 				}
 				const header = [
-					`[obs_recall id=${params.id} offset=${offset} next_offset=${chunk.nextOffset} eof=${chunk.eof}]`,
+					`[obs_recall id=${params.id} offset=${chunk.offset} next_offset=${chunk.nextOffset} eof=${chunk.eof}]`,
 					`[chunk_bytes=${chunk.bytes} chunk_lines=${chunk.lines}; use next_offset to continue]`,
 				].join("\n");
 				const content = `${header}\n${chunk.text}`;
@@ -95,7 +95,8 @@ export function createObservationPackExtension(): ExtensionFactory {
 				await ledgerFor(ctx)({
 					event: "recall",
 					id: params.id,
-					offset,
+					requestedOffset: offset,
+					offset: chunk.offset,
 					bytes: chunk.bytes,
 					lines: chunk.lines,
 					nextOffset: chunk.nextOffset,
@@ -105,7 +106,7 @@ export function createObservationPackExtension(): ExtensionFactory {
 					content: [{ type: "text", text: content }],
 					details: {
 						id: params.id,
-						offset,
+						offset: chunk.offset,
 						bytes: chunk.bytes,
 						lines: chunk.lines,
 						nextOffset: chunk.nextOffset,
