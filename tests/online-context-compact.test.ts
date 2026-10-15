@@ -7,6 +7,7 @@ import {
 	estimateTokens,
 	type CompactOptions,
 	type ExtensionContext,
+	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -19,12 +20,29 @@ import {
 	registerOnlineContextCompact,
 	resolveKeepRecentTokens,
 } from "../src/sol-pi/extensions/online-context-compact/index.ts";
+import { MAX_PLAN_STRING_LENGTH } from "../src/sol-pi/extensions/online-context-compact/plan.ts";
 import {
 	appendOnlineState,
 	initialOnlineState,
 	restoreOnlineState,
 } from "../src/sol-pi/extensions/online-context-compact/state.ts";
 import { FakePi, FakeSessionManager, fakeContext } from "./helpers.ts";
+
+type JsonSchema = Readonly<Record<string, unknown>>;
+
+function explicitRepetitionBounds(schema: unknown): number[] {
+	if (typeof schema !== "object" || schema === null) return [];
+	if (Array.isArray(schema)) return schema.flatMap(explicitRepetitionBounds);
+	const record = schema as JsonSchema;
+	const ownBounds = [record.minLength, record.maxLength, record.minItems, record.maxItems].filter(
+		(value): value is number => typeof value === "number",
+	);
+	return [...ownBounds, ...Object.values(record).flatMap(explicitRepetitionBounds)];
+}
+
+function toolSchema(tool: ToolDefinition): JsonSchema {
+	return tool.parameters as unknown as JsonSchema;
+}
 
 const OPEN = [{ id: "build", goal: "build it", status: "in_progress" }] as const;
 const DONE = [{ id: "build", goal: "build it", status: "completed" }] as const;
@@ -66,10 +84,25 @@ async function runPlan(pi: FakePi, context: ExtensionContext, id: string, params
 }
 
 describe("Online Context Compact extension", () => {
-	it("registers one tool and only public Pi lifecycle hooks", () => {
+	it("registers one grammar-compatible tool and only public Pi lifecycle hooks", () => {
 		const pi = new FakePi();
 		registerOnlineContextCompact(pi.asExtensionApi());
 		expect(pi.registeredTools.map((tool) => tool.name)).toEqual(["update_plan"]);
+		const updatePlan = pi.tool("update_plan");
+		const schema = toolSchema(updatePlan);
+		expect(explicitRepetitionBounds(schema).every((bound) => bound <= MAX_PLAN_STRING_LENGTH)).toBe(true);
+		expect(schema).toMatchObject({
+			properties: {
+				steps: {
+					items: {
+						properties: {
+							id: { minLength: 1, maxLength: MAX_PLAN_STRING_LENGTH },
+							goal: { minLength: 1, maxLength: MAX_PLAN_STRING_LENGTH },
+						},
+					},
+				},
+			},
+		});
 		expect([...pi.handlers.keys()].sort()).toEqual([
 			"agent_settled",
 			"before_provider_request",

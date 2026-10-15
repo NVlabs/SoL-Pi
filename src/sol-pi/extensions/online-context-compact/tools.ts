@@ -7,7 +7,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { renderSolPiTool } from "../../tui.ts";
-import { PLAN_STATUSES, type PlanStep } from "./plan.ts";
+import { MAX_PLAN_STRING_LENGTH, PLAN_STATUSES, type PlanStep } from "./plan.ts";
 
 export type PlanProgress = {
 	readonly files_changed: readonly string[];
@@ -38,8 +38,8 @@ const progressSchema = Type.Object(
 
 const planStepSchema = Type.Object(
 	{
-		id: Type.String({ minLength: 1, maxLength: 16_384 }),
-		goal: Type.String({ minLength: 1, maxLength: 16_384 }),
+		id: Type.String({ minLength: 1, maxLength: MAX_PLAN_STRING_LENGTH }),
+		goal: Type.String({ minLength: 1, maxLength: MAX_PLAN_STRING_LENGTH }),
 		status: Type.Union(PLAN_STATUSES.map((status) => Type.Literal(status))),
 	},
 	{ additionalProperties: false },
