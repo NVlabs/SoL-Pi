@@ -173,9 +173,15 @@ export function estimateNativeCompactionTokens(
 	// Keep Pi's native cut on session entries; price only the corresponding
 	// messages that the provider actually saw after context projection.
 	const cut = findCutPoint(path, startIndex, path.length, keepRecentTokens);
-	const firstKept = cut.firstKeptEntryIndex;
-	if (compactionTokenEstimate(path, startIndex, firstKept) === 0) return 0;
-	return previousSummaryTokens + compactionTokenEstimate(path, startIndex, firstKept, projected);
+	const historyEnd = cut.isSplitTurn ? cut.turnStartIndex : cut.firstKeptEntryIndex;
+	const historyTokens =
+		historyEnd > startIndex ? compactionTokenEstimate(path, startIndex, historyEnd, projected) : 0;
+	const prefixTokens =
+		cut.isSplitTurn && cut.turnStartIndex >= 0
+			? compactionTokenEstimate(path, cut.turnStartIndex, cut.firstKeptEntryIndex, projected)
+			: 0;
+	const newHistoryTokens = historyTokens + prefixTokens;
+	return newHistoryTokens > 0 ? previousSummaryTokens + newHistoryTokens : 0;
 }
 
 function validPositiveInteger(value: unknown): value is number {
