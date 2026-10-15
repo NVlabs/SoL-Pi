@@ -250,6 +250,19 @@ describe("Online Context Compact extension", () => {
 		});
 	});
 
+	it("accepts an array system prompt on hosts that return parts", async () => {
+		const pi = new FakePi();
+		createOnlineContextCompactExtension({})(pi.asExtensionApi());
+		const context = fakeContext(pi.sessionManager, {
+			getSystemPrompt: () => ["conventions", "second part"] as unknown as string,
+		});
+		await pi.emit("session_start", { type: "session_start" }, context);
+		await expect(
+			pi.emit("before_provider_request", { type: "before_provider_request", payload: {} }, context),
+		).resolves.toBeUndefined();
+
+	});
+
 	it("stops at an eligible completed-step boundary, then compacts after settlement", async () => {
 		const manager = new FakeSessionManager();
 		manager.appendMessage({ role: "user", content: `old ${"x".repeat(8_000)}`, timestamp: Date.now() });
