@@ -7,6 +7,7 @@ import { getAgentDir, type ExtensionAPI, type ExtensionContext, type ExtensionFa
 import { loadSolPiConfig, type SolPiConfig } from "./config.ts";
 import { registerActionFusion } from "./extensions/action-fusion/index.ts";
 import { registerEvidencePreservingReducer } from "./extensions/evidence-preserving-reducer/index.ts";
+import { registerKxpmsProvider } from "./extensions/kxpms-provider.ts";
 import { registerObservationPack } from "./extensions/observation-pack/index.ts";
 import { registerOnlineContextCompact } from "./extensions/online-context-compact/index.ts";
 
@@ -32,6 +33,9 @@ export function createSolPiExtension(
 		pi.on("session_start", (_event, ctx) => {
 			if (initialized) return;
 			initialized = true;
+			// Register the kxpms gateway (opt-in via KXPMS_API_KEY) before any
+			// feature that resolves `evidencePreservingReducerProvider`.
+			registerKxpmsProvider(ctx);
 			registerConfiguredFeatures(pi, loadConfig(ctx));
 		});
 	};
