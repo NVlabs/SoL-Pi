@@ -96,14 +96,14 @@ function bashEvent(body: string, overrides: Partial<ToolResultEvent> = {}): Tool
 	} as ToolResultEvent;
 }
 
-function fusedEvent(body: string, failed: boolean): ToolResultEvent {
+function fusedEvent(body: string, failed: boolean, command: string): ToolResultEvent {
 	const marker = failed ? "[then_run:failed]" : "[then_run:succeeded]";
 	const confirmation = "Successfully wrote 12 bytes to target.ts";
 	return {
 		type: "tool_result",
 		toolName: "write",
 		toolCallId: "write-1",
-		input: { path: "target.ts", content: "export {};\n", then_run: { command: "npm test" } },
+		input: { path: "target.ts", content: "export {};\n", then_run: { command } },
 		content: failed
 			? [{ type: "text", text: `${confirmation}\n\n${marker}\n\n${body}` }]
 			: [
@@ -249,6 +249,54 @@ describe("evidence-preserving reducer", () => {
 		expect(DIAGNOSTIC_COMMAND.test("rg test src")).toBe(false);
 	});
 
+	it.each(["npm", "pnpm", "yarn"])("recognizes test script invocations with %s", (manager) => {
+		for (const command of [
+			`${manager} test`,
+			`${manager} run test`,
+			`${manager} run test -- --watch=false`,
+			`cd project && ${manager} run test`,
+		]) {
+			expect(DIAGNOSTIC_COMMAND.test(command), command).toBe(true);
+		}
+	});
+
+	it.each(["npm", "pnpm", "yarn"])("does not match unrelated scripts with %s", (manager) => {
+		for (const command of [
+			`${manager} run build`,
+			`${manager} run test:unit`,
+			`${manager} run testing`,
+			`${manager} run`,
+			`not${manager} run test`,
+		]) {
+			expect(DIAGNOSTIC_COMMAND.test(command), command).toBe(false);
+		}
+	});
+
+	it.each(["npm run test", "pnpm run test", "yarn run test"])("reduces bash output from %s", async (command) => {
+		const root = await storeRoot();
+		const signal = "ERROR test target failed";
+		const body = `${signal}\n${"diagnostic output\n".repeat(400)}`;
+		const { context, manager, pi } = load(root, modelComplete(body, (input) => ({
+			schema: REDUCER_RECEIPT_SCHEMA,
+			source_sha256: sourceHash(input),
+			status: "failure",
+			uncertain: false,
+			evidence: [{ kind: "failure", quote: signal }],
+		})));
+
+		const result = (await pi.emit("tool_result", bashEvent(body, { input: { command } }), context)) as {
+			content: { type: string; text: string }[];
+			isError: boolean;
+		};
+
+		expect(result.content[0]?.text).toContain("sol_pi_evidence_receipt_v1");
+		expect(result.content[0]?.text).toContain(signal);
+		expect(result.content[0]?.text).not.toContain("diagnostic output");
+		expect(result.isError).toBe(true);
+		const candidate = manager.customEntryData().find((entry) => entry.kind === "candidate");
+		expect(await readFile(String(candidate?.sourcePath), "utf8")).toBe(body);
+	});
+
 	it("loads a configured reducer provider/model route", async () => {
 		const root = await storeRoot();
 		const config = loadReducerConfig(root, {
@@ -376,9 +424,18 @@ describe("evidence-preserving reducer", () => {
 		});
 	});
 
-	it.each([false, true])(
-		"reduces fused command output while preserving the mutation confirmation (failed=%s)",
-		async (failed) => {
+	it.each([
+		{ command: "npm test", failed: false },
+		{ command: "npm test", failed: true },
+		{ command: "npm run test", failed: false },
+		{ command: "npm run test", failed: true },
+		{ command: "pnpm run test", failed: false },
+		{ command: "pnpm run test", failed: true },
+		{ command: "yarn run test", failed: false },
+		{ command: "yarn run test", failed: true },
+	])(
+		"reduces fused $command output while preserving the mutation confirmation (failed=$failed)",
+		async ({ command, failed }) => {
 			const root = await storeRoot();
 			const signal = failed ? "ERROR test target failed" : "PASS test target completed";
 			const body = `${signal}\n${"diagnostic output\n".repeat(400)}`;
@@ -393,7 +450,7 @@ describe("evidence-preserving reducer", () => {
 				})),
 			);
 
-			const result = (await pi.emit("tool_result", fusedEvent(body, failed), context)) as {
+			const result = (await pi.emit("tool_result", fusedEvent(body, failed, command), context)) as {
 				content: Array<{ type: string; text?: string }>;
 				details: Record<string, unknown>;
 				isError: boolean;
