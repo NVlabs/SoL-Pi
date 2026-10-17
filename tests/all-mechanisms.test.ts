@@ -130,7 +130,7 @@ describe("SoL-Pi entrypoint", () => {
 										source_sha256: sourceHash(input),
 										status: "failure",
 										uncertain: false,
-										evidence: [{ kind: "failure", quote: "ERROR configured reducer failure" }],
+										evidence: [{ kind: "failure", quote: "ERROR configured reducer failure\ndiagnostic line" }],
 									}),
 								},
 							],
