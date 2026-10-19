@@ -19,7 +19,7 @@ node scripts/check-pi-compat.mjs --pi-root "$(npm root -g)/@earendil-works/pi-co
 
 ## Public API surface
 
-SoL-Pi imports only public package exports:
+SoL-Pi declares all four Pi package peers at `>=0.84.2 <0.86.0 || 1.0.4 || 1.3.0`, preserving the validated legacy window and admitting only the explicitly tested 1.x releases. The checkout retains Pi 1.3.0 as its development dependency and validation target. Other 1.x versions and Pi 0.86 or newer pre-1.0 releases remain outside the declared peer range. Pi 0.81.1 remains a historical API compatibility check rather than a supported runtime baseline. SoL-Pi imports only public package exports:
 
 - `createEditToolDefinition`
 - `createWriteToolDefinition`
