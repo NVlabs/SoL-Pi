@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	formatSavingsBytes,
 	formatSavingsCount,
+	isNestedToolCallId,
 	renderSolPiTool,
 	showSolPiSavings,
 } from "../src/sol-pi/tui.ts";
@@ -67,6 +68,14 @@ describe("SoL-Pi TUI savings presentation", () => {
 		);
 		vi.advanceTimersByTime(4_000);
 		expect(setStatus).toHaveBeenLastCalledWith("sol-pi-savings", undefined);
+	});
+
+	it("recognizes calls a tool made through ctx.executeTool by their <parent>/<n> id", () => {
+		expect(isNestedToolCallId("toolu_01AbC/1")).toBe(true);
+		expect(isNestedToolCallId("cm1/2/12")).toBe(true);
+		expect(isNestedToolCallId("toolu_01AbC")).toBe(false);
+		expect(isNestedToolCallId("call_abc|fc_def")).toBe(false);
+		expect(isNestedToolCallId("call-1:then_run")).toBe(false);
 	});
 
 	it.each(["rpc", "json", "print"] as const)("does not emit presentation in %s mode", (mode) => {
