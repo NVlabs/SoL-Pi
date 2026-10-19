@@ -5,6 +5,7 @@
 # ⚡ SoL-Pi: Scaling Auto-Research Loops for Efficient Agent Harnesses
 
 <p align="center">
+  <a href="https://arxiv.org/abs/2609.20519"><img src="https://img.shields.io/badge/arXiv-2609.20519-B31B1B?logo=arxiv&amp;logoColor=white" alt="arXiv: 2609.20519" /></a>
   <a href="#getting-started"><img src="https://img.shields.io/badge/Getting%20Started-Install-76B900" alt="Getting Started" /></a>
   <a href="docs/configuration.md"><img src="https://img.shields.io/badge/Docs-Configuration-555555" alt="Configuration" /></a>
   <a href="https://nvlabs.github.io/SoL-Pi/"><img src="https://img.shields.io/badge/Blog-SoL--Pi-76B900" alt="SoL-Pi Blog" /></a>
@@ -13,6 +14,13 @@
 
 > [!NOTE]
 > This repository contains the open-source version of SoL-Pi, a standalone extension for [Pi](https://github.com/earendil-works/pi). It is not an official distribution of Pi.
+>
+> SoL-Pi is under active development to support pi-v1 and the latest model checkpoints.
+
+## 📰 News
+
+- **2026-10-14** — Released the [SoL-Pi Skill](examples/sol-pi-skill/README.md) example: use SoL-Pi as a skill from Claude Code (`/sol-pi`) or Codex (`$sol-pi`). The current task is handed to SoL-Pi with the host conversation as context, runs in the background, and its result is reported back to the session.
+- **2026-10-13** — Released the [SoL-Pi Visual](examples/solpi-visual/README.md) example for 3D scene reconstruction in Blender. On this task, it lowers the cost per scene by **37%** compared with Codex, with 13% fewer model calls. See the example for visual scores and scene comparisons.
 
 ## 💡 TL;DR
 
@@ -44,11 +52,15 @@ The mechanisms share four rules:
 - **No Pi patches.** SoL-Pi imports public Pi APIs and does not vendor the Pi source tree.
 - **Explicit opt-in.** A missing configuration leaves every mechanism disabled.
 - **Preserve evidence.** Original observations remain available locally, and reducer failures leave the original result unchanged.
-- **Use Pi's runtime choices.** Authentication, provider URLs, the main model, and shell behavior remain under Pi's control.
+- **Use Pi's runtime choices.** Authentication, provider URLs, and the main model remain under Pi's control.
 
 ## Technical Details and Core Insights
 
 Read the [SoL-Pi blog](https://nvlabs.github.io/SoL-Pi/) for a deeper look at the technical details, design rationale, and core insights behind SoL-Pi, including how auto-research led to the four efficiency mechanisms and how they work.
+
+## Paper
+
+Read our paper: [SoL-Pi: Recursively Scaling Auto-Research Loops for Efficient Agent Harness](https://arxiv.org/abs/2609.20519).
 
 ## Getting Started
 
@@ -56,15 +68,17 @@ Read the [SoL-Pi blog](https://nvlabs.github.io/SoL-Pi/) for a deeper look at th
 
 - Node.js 22.19 or newer
 - npm
-- `@earendil-works/pi-coding-agent` 0.84.2
+- `@earendil-works/pi-coding-agent` 0.84.2 or newer; tested with 0.84.2, 1.0.4, and 1.3.0. Install 1.3.0: a fresh install of Pi 1.0.x or 1.1.0 now fails to start, because those releases do not pin their internal packages. Other versions are untested: `scripts/check-pi-compat.mjs` warns on them, and `--strict` fails.
 
 ### Install
 
-Install the tested Pi release:
+Install the latest tested Pi release:
 
 ```bash
-npm install --global @earendil-works/pi-coding-agent@0.84.2
+npm install --global @earendil-works/pi-coding-agent@1.3.0
 ```
+
+Pi 0.84.2 remains supported and tested; install `@earendil-works/pi-coding-agent@0.84.2` instead to stay on it.
 
 Then install SoL-Pi directly from [NVlabs/SoL-Pi](https://github.com/NVlabs/SoL-Pi):
 
@@ -100,9 +114,20 @@ The following conservative configuration enables only the two local mechanisms t
 }
 ```
 
-Enable additional mechanisms only after reviewing their configuration and security implications. SoL-Pi uses no dedicated environment variables; feature flags, the reducer provider/model route, and the compaction ratio are configured in `sol-pi.json`.
+Enable additional mechanisms only after reviewing their configuration and security implications. SoL-Pi uses no dedicated environment variables; feature flags, the reducer provider/model route, and the compaction ratio are configured in `sol-pi.json`. See [sol-pi.example.json](sol-pi.example.json) for a template listing every key.
 
-For the complete schema, see [Configuration](docs/configuration.md). Coding agents and automated environments should follow the canonical [agent installation and configuration protocol](agents-install.md). Its all-enabled profile is checked with `scripts/check-sol-pi-config.mjs --require-all-enabled`.
+For the complete schema, see [Configuration](docs/configuration.md). Coding agents and automated environments should follow the canonical [agent installation and configuration protocol](agents-install.md), which describes an all-enabled configuration checked with `scripts/check-sol-pi-config.mjs --require-all-enabled`.
+
+### Pi 1.x and codemode
+
+SoL-Pi is tested with Pi 0.84.2, 1.0.4, and 1.3.0. All four mechanisms work with Pi codemode in both `codemode.mode: "on"` and `"only"`. In `"only"` mode, the model reaches bash, edit, and write through codemode scripts, and Evidence-Preserving Reducer skips script calls, so it has no effect there. See [Codemode](docs/compatibility.md#codemode) for per-mechanism behavior.
+
+To check the Pi that will load SoL-Pi, install the checkout's dependencies, then run the check from the checkout; `--strict` also fails on an untested Pi version. Without `npm ci`, the check cannot load TypeScript, prints a warning, and fails under `--strict` even on a tested Pi:
+
+```bash
+npm ci --ignore-scripts
+node scripts/check-pi-compat.mjs --pi-root "$(npm root -g)/@earendil-works/pi-coding-agent"
+```
 
 ## Storage and Security
 
@@ -116,7 +141,9 @@ ObservationPack and Evidence-Preserving Reducer store session-specific archives 
 
 They archive eligible source material in this directory. The archived copies remain local and are not automatically deleted when the Pi session ends.
 
-Online Context Compact stores its state in Pi's session log. After a successful compaction, it starts a new turn and automatically continues the active task. Cancelling the run or exiting Pi does not trigger automatic continuation.
+With `pi --no-session` or `SessionManager.inMemory()`, Pi provides no session directory. SoL-Pi instead creates a private directory named `sol-pi-<session-id>-<random>/` under the operating system's temporary directory. ObservationPack and Evidence-Preserving Reducer share this directory for the lifetime of the loaded extension. These modes disable Pi's session-log persistence; SoL-Pi still writes archive files for exact recall. Temporary archives are also retained after the session or worker exits so callers can read referenced evidence. Their eventual cleanup follows the host's temporary-file policy or the caller's cleanup, and they are not guaranteed to survive system cleanup or support session recovery.
+
+Online Context Compact stores its state in Pi's session log. After a successful compaction, it starts a new turn and automatically continues the active task; after a failed compaction, it continues the task without compacting and reports the error. Cancelling the compaction or exiting Pi does not trigger automatic continuation.
 
 Evidence-Preserving Reducer may send eligible diagnostic-log content to its configured reducer model using Pi-managed authentication. Review [SECURITY.md](SECURITY.md) before enabling it. Do not enable remote reduction for logs that must remain local.
 
@@ -137,10 +164,10 @@ Install from the lockfile and run the complete source checks:
 npm ci --ignore-scripts
 npm run check
 npm audit --audit-level=high
-node scripts/check-pi-compat.mjs
+npm run check:pi
 ```
 
-`npm run check` covers TypeScript, the complete test suite, and package inspection. The development dependency set is pinned to Pi 0.84.2; runtime Pi packages remain peer dependencies so Pi owns their installation and upgrades.
+`npm run check` covers TypeScript, the complete test suite, and package inspection. `npm run check:pi` runs `scripts/check-pi-compat.mjs` against the development dependency; pass `-- --strict` to fail on warnings, or `-- --pi-root <dir>` to check another Pi installation. The development dependency set is pinned to Pi 1.3.0. To check another tested Pi version, install its four Pi packages over the development dependency (for 1.0.4 also `pi-codemode`, `pi-mcp` and `chord` at 1.0.4) and rerun the checks; runtime Pi packages remain peer dependencies so Pi owns their installation and upgrades.
 
 ## Project Status
 

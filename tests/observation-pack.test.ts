@@ -8,13 +8,31 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
+import {
+	fauxAssistantMessage,
+	fauxProvider,
+	fauxText,
+	fauxToolCall,
+	type FauxResponseStep,
+} from "@earendil-works/pi-ai/providers/faux";
+import * as piCodingAgent from "@earendil-works/pi-coding-agent";
+import {
+	createAgentSession,
+	DefaultResourceLoader,
+	SessionManager,
+	SettingsManager,
+	type AgentSession,
+	type ExtensionFactory,
+} from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	createObservationPackExtension,
 	FULL_SENDS,
 	THRESHOLD_BYTES,
 } from "../src/sol-pi/extensions/observation-pack/index.ts";
-import { componentText, FakePi, FakeSessionManager, fakeContext, plainTheme } from "./helpers.ts";
+import { componentText, FakePi, FakeSessionManager, fakeContext, fakeToolContext, plainTheme } from "./helpers.ts";
+import { runtimeRoot } from "../src/sol-pi/runtime-paths.ts";
 
 const roots: string[] = [];
 const SESSION_ID = "session-a";
@@ -29,6 +47,23 @@ async function sessionRoot(): Promise<string> {
 	const value = await mkdtemp(join(tmpdir(), "observationpack-test-"));
 	roots.push(value);
 	return value;
+}
+
+let symlinkSupport: Promise<boolean> | undefined;
+/** Windows without Developer Mode / admin rights cannot create symlinks; probe once and cache. */
+function canCreateSymlinks(): Promise<boolean> {
+	symlinkSupport ??= (async () => {
+		const dir = await sessionRoot();
+		const target = join(dir, "probe-target.txt");
+		await writeFile(target, "probe");
+		try {
+			await symlink(target, join(dir, "probe-link.txt"));
+			return true;
+		} catch {
+			return false;
+		}
+	})();
+	return symlinkSupport;
 }
 
 function observationPackPi(): FakePi {
@@ -92,6 +127,31 @@ function captureConsoleErrors(): string[] {
 }
 
 describe("observation pack", () => {
+	it("archives and recalls large observations without a session directory", async () => {
+		const manager = SessionManager.inMemory();
+		const context = fakeContext("", { sessionManager: manager });
+		const root = runtimeRoot(context);
+		roots.push(root);
+		const body = `in-memory observation\n${repeatPastThreshold("recall bytes\n")}`;
+		const message = toolResult(body);
+		const pi = observationPackPi();
+		for (let index = 0; index < FULL_SENDS; index++) {
+			expect(resultText((await pi.emitContext([message], context))[0]!)).toBe(body);
+		}
+		const placeholder = resultText((await pi.emitContext([message], context))[0]!);
+		const id = placeholder.match(/id: (obs_[a-f0-9]{24})/u)?.[1];
+		expect(id).toBeTruthy();
+		expect(await readFile(join(root, "observation-pack", "objects", `${id}.txt`), "utf8")).toBe(body);
+		const recalled = await observationPackPi().tool("obs_recall").execute(
+			"recall-memory", { id, offset: 0 }, undefined, undefined,
+			fakeToolContext("", { sessionManager: manager }),
+		);
+		expect(recalled.content).toEqual(expect.arrayContaining([
+			expect.objectContaining({ type: "text", text: expect.stringContaining("in-memory observation") }),
+		]));
+		expect(manager.getSessionFile()).toBeUndefined();
+	});
+
 	it("registers its public surface without legacy environment flags", () => {
 		const pi = observationPackPi();
 		expect(pi.handlers.has("context")).toBe(true);
@@ -195,6 +255,71 @@ describe("observation pack", () => {
 		expect(combined[2]?.[1]).not.toBe(resultText(second));
 	});
 
+	it("keeps mid-conversation system messages in place while packing", async () => {
+		const sessionDir = await sessionRoot();
+		const pi = observationPackPi();
+		const body = `system order\n${repeatPastThreshold("packed line\n")}`;
+		const system = (content: string): AgentMessage =>
+			({ role: "system", content, timestamp: 1 }) as unknown as AgentMessage;
+		const assistant = (text: string): AgentMessage =>
+			({ role: "assistant", content: [{ type: "text", text }], timestamp: 1 }) as unknown as AgentMessage;
+		const conversation: AgentMessage[] = [
+			system("prompt"),
+			{ role: "user", content: "go", timestamp: 1 },
+			toolResult(body),
+			assistant("first"),
+			system("tool declaration delta"),
+			{ role: "user", content: "again", timestamp: 1 },
+			assistant("second"),
+		];
+
+		const projected = await pi.emitContext(conversation, fakeContext(sessionDir));
+
+		expect(projected.map((message) => message.role)).toEqual(conversation.map((message) => message.role));
+		expect(projected[0]).toEqual(conversation[0]);
+		expect(projected[4]).toEqual(conversation[4]);
+		const placeholder = resultText(projected[2]!);
+		expect(placeholder).toMatch(/^\[large tool result replaced/u);
+		expect(resultText(conversation[2]!)).toBe(body);
+
+		const id = placeholder.match(/id: (obs_[a-f0-9]{24})/u)?.[1];
+		const recalled = await pi
+			.tool("obs_recall")
+			.execute("recall-1", { id, offset: 0 }, undefined, undefined, fakeToolContext(sessionDir));
+		expect(recalled.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n")).toMatch(
+			/system order/u,
+		);
+	});
+
+	it("edits the visible messages in place so later context handlers see the placeholder", async () => {
+		const sessionDir = await sessionRoot();
+		const pi = observationPackPi();
+		const seen: string[] = [];
+		const results: unknown[] = [];
+		const [packHandler] = pi.handlers.get("context") ?? [];
+		pi.handlers.set("context", [
+			async (event, context) => {
+				const result = await packHandler!(event, context);
+				results.push(result);
+				return result;
+			},
+			(event) => {
+				const message = (event as { messages: AgentMessage[] }).messages[0];
+				seen.push(resultText(message!));
+			},
+		]);
+		const body = `ordering\n${repeatPastThreshold("observer line\n")}`;
+		const message = toolResult(body, { toolName: "codemode" });
+
+		for (let request = 0; request < 3; request += 1) await pi.emitContext([message], fakeContext(sessionDir));
+
+		expect(results).toEqual([undefined, undefined, undefined]);
+		expect(seen[0]).toBe(body);
+		expect(seen[1]).toBe(body);
+		expect(seen[2]).toMatch(/^\[large tool result replaced/u);
+		expect(seen[2]).toMatch(/tool: codemode/u);
+	});
+
 	it("recalls from durable storage after a restart of the extension", async () => {
 		const sessionDir = await sessionRoot();
 		const body = `durable observation\n${repeatPastThreshold("recall line\n")}`;
@@ -205,7 +330,7 @@ describe("observation pack", () => {
 		const resumed = observationPackPi();
 		const result = await resumed
 			.tool("obs_recall")
-			.execute("recall-1", { id, offset: 0 }, undefined, undefined, fakeContext(sessionDir));
+			.execute("recall-1", { id, offset: 0 }, undefined, undefined, fakeToolContext(sessionDir));
 		const recalled = result.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
 
 		expect(recalled).toMatch(/durable observation/u);
@@ -240,7 +365,8 @@ describe("observation pack", () => {
 		expect(projected[2]).toMatch(new RegExp(`id: ${id}`, "u"));
 	});
 
-	it("fails recall closed when an object path is replaced by a symlink", async () => {
+	it("fails recall closed when an object path is replaced by a symlink", async (ctx) => {
+		if (!(await canCreateSymlinks())) ctx.skip();
 		const sessionDir = await sessionRoot();
 		const body = `stored\n${repeatPastThreshold("observation bytes\n")}`;
 		const message = toolResult(body);
@@ -258,7 +384,7 @@ describe("observation pack", () => {
 			{ id, offset: 0 },
 			undefined,
 			undefined,
-			fakeContext(sessionDir),
+			fakeToolContext(sessionDir),
 		);
 		if (process.platform === "win32") {
 			await expect(recall).rejects.toThrow(/not a regular file/u);
@@ -279,7 +405,7 @@ describe("observation pack", () => {
 		let offset = 0;
 		let recalled = "";
 		for (;;) {
-			const result = await recall.execute("recall-1", { id, offset }, undefined, undefined, fakeContext(sessionDir));
+			const result = await recall.execute("recall-1", { id, offset }, undefined, undefined, fakeToolContext(sessionDir));
 			const details = result.details as { eof: boolean; nextOffset: number };
 			const output = result.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
 			const firstNewline = output.indexOf("\n");
@@ -294,7 +420,8 @@ describe("observation pack", () => {
 		expect(Buffer.from(recalled, "utf8")).toEqual(Buffer.from(body, "utf8"));
 	});
 
-	it("fails storage closed when the observation directory is a symlink", async () => {
+	it("fails storage closed when the observation directory is a symlink", async (ctx) => {
+		if (!(await canCreateSymlinks())) ctx.skip();
 		const sessionDir = await sessionRoot();
 		const targetDir = await sessionRoot();
 		await mkdir(join(sessionDir, "sol-pi", SESSION_ID, "observation-pack"), { recursive: true });
@@ -364,4 +491,189 @@ describe("observation pack", () => {
 			compoundText,
 		]);
 	});
+});
+
+/** Pi 1.0 codemode; Pi 0.84.2 does not ship it. */
+const createCodemodeExtension = (piCodingAgent as unknown as Record<string, unknown>).createCodemodeExtension as
+	| ((options: { mode: "on" | "only" }) => ExtensionFactory)
+	| undefined;
+
+type WireMessage = { role: string; toolCallId?: string; toolName?: string; content?: unknown };
+type SessionMode = "direct" | "on" | "only";
+
+function wireText(message: WireMessage | undefined): string {
+	if (!message || !Array.isArray(message.content)) return typeof message?.content === "string" ? message.content : "";
+	return (message.content as { type: string; text?: string }[])
+		.flatMap((block) => (block.type === "text" && block.text !== undefined ? [block.text] : []))
+		.join("\n");
+}
+
+/**
+ * Drive ObservationPack through a real Pi AgentSession, extension runner and
+ * agent loop (faux provider, no network). Prompt 1 produces one large tool
+ * result; before prompt 2 the active tools change, which makes Pi 1.0 record a
+ * mid-conversation tool-declaration system message; prompt 2 recalls the
+ * packed observation. Returns every provider request as the provider saw it.
+ */
+async function runRealSession(mode: SessionMode, body: string) {
+	const cwd = await sessionRoot();
+	const agentDir = join(cwd, "agent");
+	await mkdir(agentDir);
+	const viaScript = mode === "only";
+	const requests: WireMessage[][] = [];
+	const record = (step: FauxResponseStep): FauxResponseStep =>
+		async (context, options, state, model) => {
+			requests.push(JSON.parse(JSON.stringify(context.messages)) as WireMessage[]);
+			return typeof step === "function" ? await step(context, options, state, model) : step;
+		};
+	const call = (name: string, args: { [key: string]: string | number | boolean }, id: string) =>
+		viaScript
+			? fauxToolCall("codemode", { code: `text(await tools.${name}(${JSON.stringify(args)}));` }, { id })
+			: fauxToolCall(name, args, { id });
+	const faux = fauxProvider({
+		provider: `sol-pi-op-${mode}`,
+		api: `sol-pi-op-api-${mode}`,
+		models: [{ id: `sol-pi-op-model-${mode}`, contextWindow: 128_000, maxTokens: 1_024 }],
+	});
+	const steps: FauxResponseStep[] = [
+		fauxAssistantMessage(call("emit_output", { large: true }, "big-1"), { stopReason: "toolUse" }),
+		fauxAssistantMessage(fauxText("first done")),
+		fauxAssistantMessage(call("emit_output", { large: false }, "small-1"), { stopReason: "toolUse" }),
+		(context) => {
+			const big = (context.messages as WireMessage[]).find((message) => message.toolCallId === "big-1");
+			const id = wireText(big).match(/id: (obs_[a-f0-9]{24})/u)?.[1] ?? "missing";
+			return fauxAssistantMessage(call("obs_recall", { id, offset: 0 }, "recall-1"), { stopReason: "toolUse" });
+		},
+		fauxAssistantMessage(fauxText("second done")),
+	];
+	faux.setResponses(steps.map(record));
+	const extension: ExtensionFactory = (pi) => {
+		pi.registerProvider(faux.provider);
+		pi.registerTool({
+			name: "emit_output",
+			label: "Emit Output",
+			description: "Return a large or a small text result.",
+			parameters: Type.Object({ large: Type.Boolean() }),
+			async execute(_toolCallId, params) {
+				return { content: [{ type: "text", text: params.large ? body : "small output" }], details: {} };
+			},
+		});
+		createObservationPackExtension()(pi);
+	};
+	const settingsManager = SettingsManager.inMemory({
+		compaction: { enabled: false },
+		retry: { enabled: false },
+		...(mode === "direct" ? {} : { defaultTools: ["+codemode"], codemode: { mode } }),
+	});
+	const resourceLoader = new DefaultResourceLoader({
+		cwd,
+		agentDir,
+		settingsManager,
+		extensionFactories: [
+			{ name: `observation-pack-session-${mode}`, factory: extension },
+			...(mode === "direct" ? [] : [{ name: `codemode-${mode}`, factory: createCodemodeExtension!({ mode }) }]),
+		],
+		noExtensions: true,
+		noSkills: true,
+		noPromptTemplates: true,
+		noThemes: true,
+		noContextFiles: true,
+		systemPrompt: "You are a deterministic ObservationPack test assistant.",
+	});
+	await resourceLoader.reload();
+	expect(resourceLoader.getExtensions().errors).toEqual([]);
+
+	let session: AgentSession | undefined;
+	try {
+		const created = await createAgentSession({
+			cwd,
+			agentDir,
+			model: faux.getModel(),
+			thinkingLevel: "off",
+			tools: ["emit_output", "obs_recall", "read", ...(mode === "direct" ? [] : ["codemode"])],
+			resourceLoader,
+			sessionManager: SessionManager.create(cwd, join(cwd, "sessions")),
+			settingsManager,
+		});
+		session = created.session;
+		const extensionErrors: string[] = [];
+		session.extensionRunner.onError((error) => extensionErrors.push(`${error.event}: ${error.error}`));
+		await session.prompt("produce output", { expandPromptTemplates: false, source: "interactive" });
+		session.setActiveToolsByName(session.getActiveToolNames().filter((name) => name !== "read"));
+		await session.prompt("recall it", { expandPromptTemplates: false, source: "interactive" });
+		const stored = JSON.parse(JSON.stringify(session.messages)) as WireMessage[];
+		return { requests, stored, extensionErrors, pending: faux.getPendingResponseCount() };
+	} finally {
+		session?.dispose();
+	}
+}
+
+function expectRealSessionPacking(run: Awaited<ReturnType<typeof runRealSession>>, body: string, scriptTool: boolean) {
+	expect(run.extensionErrors).toEqual([]);
+	expect(run.pending).toBe(0);
+	expect(run.requests).toHaveLength(5);
+	const bigResult = (messages: WireMessage[]) => wireText(messages.find((message) => message.toolCallId === "big-1"));
+
+	// Full for two provider requests, then one stable placeholder. A codemode
+	// result wraps the script output, so compare against the stored result.
+	const original = bigResult(run.stored);
+	expect(original).toContain(body);
+	expect(bigResult(run.requests[1]!)).toBe(original);
+	expect(bigResult(run.requests[2]!)).toBe(original);
+	const placeholder = bigResult(run.requests[3]!);
+	expect(placeholder).toMatch(/^\[large tool result replaced/u);
+	expect(placeholder).toMatch(scriptTool ? /tool: codemode/u : /tool: emit_output/u);
+	expect(bigResult(run.requests[4]!)).toBe(placeholder);
+	// Recall returns the original bytes.
+	const recall = run.requests[4]!.find((message) => message.toolCallId === "recall-1");
+	expect(recall?.toolName).toBe(scriptTool ? "codemode" : "obs_recall");
+	expect(wireText(recall)).toMatch(/^\[obs_recall id=obs_[a-f0-9]{24} offset=0 /mu);
+	expect(wireText(recall)).toContain(body.slice(0, 200));
+
+	// Every request carries the transcript's message order, system messages
+	// included. Codemode "only" hides the declarations of script-callable tools
+	// from requests (and re-projects them when the loadout changes), so system
+	// messages are compared with the transcript without their declarations.
+	// Packing starts on the fourth request: from the loadout change on, every
+	// system message must be sent byte-identically.
+	const roles = (messages: WireMessage[]) => messages.map((message) => message.role);
+	const withoutDeclarations = (message: WireMessage) => {
+		const { toolsAdded: _added, toolsRemoved: _removed, ...rest } = message as WireMessage & Record<string, unknown>;
+		return rest;
+	};
+	const finalRequest = run.requests[4]!;
+	run.requests.forEach((request, requestIndex) => {
+		expect(roles(request)).toEqual(roles(run.stored).slice(0, request.length));
+		request.forEach((message, index) => {
+			if (message.role !== "system") return;
+			expect(withoutDeclarations(message)).toEqual(withoutDeclarations(run.stored[index]!));
+			if (requestIndex >= 2) expect(message).toEqual(finalRequest[index]);
+		});
+	});
+	// Pi 1.0 records a leading system message and a tool-declaration delta; Pi 0.84 neither.
+	const systemIndices = roles(run.stored).flatMap((role, index) => (role === "system" ? [index] : []));
+	if (systemIndices.length > 0) {
+		expect(systemIndices[0]).toBe(0);
+		expect(systemIndices.length).toBeGreaterThan(1);
+		expect(roles(finalRequest).filter((role) => role === "system")).toHaveLength(systemIndices.length);
+	}
+}
+
+describe("observation pack in a real Pi session", () => {
+	it("packs direct tool results and keeps the transcript's system messages in place", async () => {
+		const body = `real session\n${repeatPastThreshold("direct line\n")}`;
+		expectRealSessionPacking(await runRealSession("direct", body), body, false);
+	}, 20_000);
+});
+
+describe.skipIf(createCodemodeExtension === undefined)("observation pack with Pi codemode", () => {
+	it('packs a codemode script result and recalls from a script in codemode "only" mode', async () => {
+		const body = `codemode only\n${repeatPastThreshold("script line\n")}`;
+		expectRealSessionPacking(await runRealSession("only", body), body, true);
+	}, 20_000);
+
+	it('packs direct tool results next to codemode in codemode "on" mode', async () => {
+		const body = `codemode on\n${repeatPastThreshold("direct line\n")}`;
+		expectRealSessionPacking(await runRealSession("on", body), body, false);
+	}, 20_000);
 });
