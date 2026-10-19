@@ -427,6 +427,30 @@ describe("observation pack", () => {
 		await expect(readFile(join(targetDir, `${id}.txt`))).rejects.toMatchObject({ code: "ENOENT" });
 	});
 
+	it("fails open and warns once per session manager when runtime storage is unavailable", async () => {
+		const unavailableA = new FakeSessionManager([], SESSION_ID, "");
+		const unavailableB = new FakeSessionManager([], "session-b", "");
+		for (const manager of [unavailableA, unavailableB]) {
+			vi.spyOn(manager, "getSessionDir").mockImplementation(() => {
+				throw new Error("session storage unavailable");
+			});
+		}
+		const pi = observationPackPi();
+		const body = repeatPastThreshold("ephemeral session output\n");
+		const message = toolResult(body);
+		const reported = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+		for (const manager of [unavailableA, unavailableB, unavailableA]) {
+			for (let request = 0; request < 3; request += 1) {
+				const projected = await pi.emitContext([message], fakeContext(manager));
+				expect(resultText(projected[0]!)).toBe(body);
+			}
+		}
+
+		expect(reported).toHaveBeenCalledTimes(2);
+		expect(String(reported.mock.calls[0]?.[0])).toContain("[observationpack] disabled for this session");
+	});
+
 	it("keeps the mutation confirmation and then_run marker of a fused write", async () => {
 		const sessionDir = await sessionRoot();
 		const pi = observationPackPi();
