@@ -1,0 +1,294 @@
+#!/usr/bin/env python3
+"""Export the calling Claude Code / Codex session as prefix context for SoL-Pi.
+
+  sol-pi-context [--host claude|codex] [--session ID | --transcript PATH]
+                 [--max-chars N] [--tool-chars N] [--out FILE]
+
+With no arguments it finds the current session from the environment:
+Claude Code sets CLAUDE_CODE_SESSION_ID, Codex sets CODEX_THREAD_ID and CODEX_HOME.
+Only what the model saw after the latest compaction is exported: user and
+assistant text, tool calls and (trimmed) tool results. Thinking, system prompts,
+attachments and the in-flight /sol-pi request itself are left out.
+"""
+import argparse
+import glob
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+# A hand-off request is a user turn that starts with the slash command or skill mention.
+HANDOFF = re.compile(r'^\s*(?:/sol-pi(?::sol-pi)?|\$sol-pi)(?:\s|$)')
+
+
+def die(message):
+    print(f'sol-pi-context: {message}', file=sys.stderr)
+    sys.exit(2)
+
+
+def clip(text, limit):
+    text = text if isinstance(text, str) else json.dumps(text, ensure_ascii=False)
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    head = limit * 2 // 3
+    tail = limit - head
+    return f'{text[:head]}\n[... {len(text) - limit} characters omitted ...]\n{text[-tail:]}'
+
+
+def one_line_args(args, limit=300):
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            return clip(args, limit)
+    if isinstance(args, dict):
+        for key in ('command', 'cmd'):
+            if isinstance(args.get(key), (str, list)):
+                value = args[key] if isinstance(args[key], str) else ' '.join(map(str, args[key]))
+                return clip(value, limit)
+    return clip(json.dumps(args, ensure_ascii=False), limit)
+
+
+# ---------------------------------------------------------------- Claude Code
+
+CLAUDE_NOISE = re.compile(r'^<(system-reminder|local-command-stdout|local-command-caveat|bash-input|bash-stdout|task-notification)')
+# A slash command is stored as a <command-name>... user turn followed by an isMeta
+# turn holding the expanded skill; keep the former (as the user's words), drop the latter.
+
+
+def claude_transcript(session_id):
+    # CLAUDE_CONFIG_DIR moves the whole config dir, transcripts included.
+    roots = [os.environ.get('CLAUDE_CONFIG_DIR'), os.path.expanduser('~/.claude')]
+    hits = []
+    for root in dict.fromkeys(r for r in roots if r):
+        hits += glob.glob(os.path.join(root, 'projects', '*', f'{session_id}.jsonl'))
+    if not hits:
+        die(f'no Claude Code transcript for session {session_id}')
+    return Path(max(hits, key=os.path.getmtime))
+
+
+def claude_text(content):
+    if isinstance(content, str):
+        return content
+    return '\n'.join(c.get('text', '') for c in content if isinstance(c, dict) and c.get('type') == 'text')
+
+
+def claude_events(path, tool_chars):
+    rows = []
+    for line in path.read_text(errors='replace').splitlines():
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            pass
+    start = 0
+    for i, row in enumerate(rows):
+        if row.get('isCompactSummary'):
+            start = i
+    meta = {'host': 'Claude Code', 'session': path.stem, 'cwd': None, 'transcript': str(path)}
+    events = []
+    for row in rows[start:]:
+        if row.get('isSidechain') or row.get('type') not in ('user', 'assistant'):
+            continue
+        meta['cwd'] = row.get('cwd') or meta['cwd']
+        msg = row.get('message') or {}
+        content = msg.get('content')
+        if row.get('isCompactSummary'):
+            events.append(('summary', claude_text(content)))
+            continue
+        if row['type'] == 'user':
+            if isinstance(content, list):
+                for c in content:
+                    if c.get('type') == 'tool_result':
+                        body = c.get('content')
+                        body = claude_text(body) if isinstance(body, list) else (body or '')
+                        events.append(('tool_result', clip(body, tool_chars), bool(c.get('is_error'))))
+                text = claude_text([c for c in content if c.get('type') == 'text'])
+            else:
+                text = content or ''
+            if row.get('isMeta') or not text.strip() or CLAUDE_NOISE.match(text.strip()):
+                continue
+            command = re.search(r'<command-name>(.*?)</command-name>.*?<command-args>(.*?)</command-args>', text, re.S)
+            if command:
+                text = f'{command.group(1)} {command.group(2)}'.strip()
+            events.append(('user', text))
+        else:
+            for c in content or []:
+                if c.get('type') == 'text' and c.get('text', '').strip():
+                    events.append(('assistant', c['text']))
+                elif c.get('type') == 'tool_use':
+                    events.append(('tool_call', c.get('name'), one_line_args(c.get('input'))))
+    return meta, events
+
+
+# ---------------------------------------------------------------- Codex
+
+CODEX_NOISE = re.compile(r'^<(environment_context|user_instructions|permissions instructions|skills_instructions|turn_aborted|apps_instructions|skill>)', re.I)
+
+
+def codex_transcript(thread_id, codex_home):
+    roots = [codex_home] if codex_home else []
+    roots += [str(p) for p in Path.home().glob('.codex*') if p.is_dir()]
+    for root in dict.fromkeys(roots):
+        hits = glob.glob(os.path.join(root, 'sessions', '**', f'rollout-*{thread_id}*.jsonl'), recursive=True)
+        if hits:
+            return Path(max(hits, key=os.path.getmtime))
+    die(f'no Codex rollout for thread {thread_id}')
+
+
+def codex_text(content):
+    if isinstance(content, str):
+        return content
+    return '\n'.join(c.get('text', '') for c in content or [] if isinstance(c, dict) and c.get('type') in ('input_text', 'output_text', 'text'))
+
+
+def codex_item(item, tool_chars, events):
+    kind = item.get('type')
+    if kind == 'message':
+        role = item.get('role')
+        text = codex_text(item.get('content'))
+        if role not in ('user', 'assistant') or not text.strip() or CODEX_NOISE.match(text.strip()):
+            return
+        events.append((role, text))
+    elif kind in ('function_call', 'custom_tool_call', 'local_shell_call'):
+        events.append(('tool_call', item.get('name') or kind, one_line_args(item.get('arguments') or item.get('input') or item.get('action'))))
+    elif kind in ('function_call_output', 'custom_tool_call_output', 'local_shell_call_output'):
+        out = item.get('output')
+        if isinstance(out, dict):
+            out = out.get('content') or out.get('output') or json.dumps(out, ensure_ascii=False)
+        if isinstance(out, list):
+            out = codex_text(out)
+        events.append(('tool_result', clip(out or '', tool_chars), False))
+
+
+def codex_events(path, tool_chars):
+    rows = []
+    for line in path.read_text(errors='replace').splitlines():
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            pass
+    start = 0
+    for i, row in enumerate(rows):
+        if row.get('type') == 'compacted':
+            start = i
+    meta = {'host': 'Codex', 'session': None, 'cwd': None, 'transcript': str(path)}
+    events = []
+    for row in rows:
+        if row.get('type') == 'session_meta':
+            meta['session'] = row['payload'].get('id')
+            meta['cwd'] = row['payload'].get('cwd')
+    for row in rows[start:]:
+        payload = row.get('payload') or {}
+        if row.get('type') == 'compacted':
+            history = payload.get('replacement_history') or []
+            if history:
+                for item in history:
+                    codex_item(item, tool_chars, events)
+            elif payload.get('message'):
+                events.append(('summary', payload['message']))
+        elif row.get('type') == 'turn_context':
+            meta['cwd'] = payload.get('cwd') or meta['cwd']
+        elif row.get('type') == 'response_item':
+            codex_item(payload, tool_chars, events)
+    return meta, events
+
+
+# ---------------------------------------------------------------- output
+
+def drop_handoff(events):
+    """Remove the in-flight request that asked for this hand-off, and everything after it."""
+    for i in range(len(events) - 1, -1, -1):
+        if events[i][0] == 'user':
+            text = events[i][1]
+            if HANDOFF.search(text):
+                return events[:i]
+            return events
+    return events
+
+
+def render(meta, events, max_chars):
+    blocks = []
+    for ev in events:
+        kind = ev[0]
+        if kind == 'summary':
+            blocks.append(f'### Earlier conversation (summary written by {meta["host"]})\n\n{ev[1].strip()}')
+        elif kind == 'user':
+            blocks.append(f'### User\n\n{ev[1].strip()}')
+        elif kind == 'assistant':
+            blocks.append(f'### {meta["host"]}\n\n{ev[1].strip()}')
+        elif kind == 'tool_call':
+            blocks.append(f'→ `{ev[1]}`: `{ev[2]}`'.replace('\n', ' '))
+        elif kind == 'tool_result':
+            label = 'error' if ev[2] else 'result'
+            blocks.append(f'```{label}\n{ev[1]}\n```' if ev[1] else f'({label}: empty)')
+    # Keep the most recent blocks within the budget.
+    kept, total = [], 0
+    for block in reversed(blocks):
+        if total + len(block) > max_chars and kept:
+            break
+        kept.append(block)
+        total += len(block) + 2
+    kept.reverse()
+    dropped = len(blocks) - len(kept)
+    header = [
+        f'# Context handed off from {meta["host"]}',
+        '',
+        f'The task below was delegated from a {meta["host"]} session. This is that session\'s conversation '
+        'so far, exported as reference. Tool calls are shown as one-line summaries and long outputs are trimmed. '
+        'The commands ran in the other agent\'s environment: re-read files before relying on them, and do not '
+        'repeat work that is already done.',
+        '',
+        f'- Session: {meta["session"]}',
+        f'- Working directory: {meta["cwd"]}',
+        f'- Transcript: {meta["transcript"]}',
+    ]
+    if dropped:
+        header.append(f'- {dropped} earlier blocks omitted to fit {max_chars} characters')
+    return '\n'.join(header) + '\n\n---\n\n' + '\n\n'.join(kept) + '\n\n---\n\n# Task\n'
+
+
+def main():
+    p = argparse.ArgumentParser(prog='sol-pi-context', description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('--host', choices=['claude', 'codex'])
+    p.add_argument('--session', help='Claude session id or Codex thread id')
+    p.add_argument('--transcript', help='transcript file path (overrides --session)')
+    p.add_argument('--max-chars', type=int, default=200_000, help='budget for the exported conversation')
+    p.add_argument('--tool-chars', type=int, default=2_000, help='per tool result')
+    p.add_argument('--keep-last-request', action='store_true', help='do not drop the final hand-off request')
+    p.add_argument('--out', help='write to this file instead of stdout')
+    args = p.parse_args()
+
+    host = args.host
+    if not host:
+        if args.transcript:
+            host = 'codex' if 'rollout-' in Path(args.transcript).name else 'claude'
+        # Codex sets CODEX_THREAD_ID for its own commands; a Claude Code session id may
+        # only be inherited from an outer process, so the innermost host is Codex.
+        elif os.environ.get('CODEX_THREAD_ID'):
+            host = 'codex'
+        elif os.environ.get('CLAUDE_CODE_SESSION_ID'):
+            host = 'claude'
+        else:
+            die('not inside Claude Code or Codex; pass --host and --session or --transcript')
+    if host == 'claude':
+        path = Path(args.transcript) if args.transcript else claude_transcript(args.session or os.environ.get('CLAUDE_CODE_SESSION_ID') or die('no session id'))
+        meta, events = claude_events(path, args.tool_chars)
+    else:
+        path = Path(args.transcript) if args.transcript else codex_transcript(args.session or os.environ.get('CODEX_THREAD_ID') or die('no thread id'),
+                                                                           os.environ.get('CODEX_HOME'))
+        meta, events = codex_events(path, args.tool_chars)
+    if not args.keep_last_request:
+        events = drop_handoff(events)
+    text = render(meta, events, args.max_chars)
+    if args.out:
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.out).write_text(text)
+        print(args.out)
+    else:
+        sys.stdout.write(text)
+
+
+if __name__ == '__main__':
+    main()

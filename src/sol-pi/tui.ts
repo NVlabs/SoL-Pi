@@ -49,6 +49,17 @@ export function renderSolPiTool(
 	return container;
 }
 
+/**
+ * Whether a tool call was made by another tool through `ctx.executeTool()`,
+ * such as a codemode script, rather than by the model. Pi 0.99+ gives such
+ * calls the id `<calling id>/<n>` (documented on `ExtensionToolContext`) and
+ * passes no other marker to `execute()`. Provider-issued ids do not end in
+ * `/<digits>`; a false match would only suppress a savings notice.
+ */
+export function isNestedToolCallId(toolCallId: string): boolean {
+	return /\/\d+$/u.test(toolCallId);
+}
+
 export function showSolPiSavings(
 	context: ExtensionContext,
 	mechanism: SolPiTuiMechanism,
