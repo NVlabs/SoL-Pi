@@ -272,10 +272,15 @@ async function runCompactionScenario(requestedCompactions: 1 | 2): Promise<void>
 		expect(run.extensionErrors).toEqual([]);
 		expect(run.compactionRequests).toEqual(
 			Array.from({ length: requestedCompactions }, () => ({
-				customInstructions: BOUNDARY_COMPACTION_INSTRUCTIONS,
+				customInstructions: expect.stringContaining('"stepId":"build","goal":"build it"'),
 				reason: "manual",
 			})),
 		);
+		for (const request of run.compactionRequests) {
+			expect(request.customInstructions).toContain(BOUNDARY_COMPACTION_INSTRUCTIONS);
+			expect(request.customInstructions).toContain('"filesChanged":["src/a.ts"]');
+			expect(request.customInstructions).toContain('"verification":["tests passed"]');
+		}
 		expect(compactions(run.sessionManager)).toBe(requestedCompactions);
 		expect(reminders(run.sessionManager, POST_COMPACTION_PLAN_REMINDER)).toBe(requestedCompactions);
 		expect(run.faux.state.callCount).toBe(requestedCompactions * 2 + 1);
@@ -312,7 +317,7 @@ describe("Online Context Compact with a real AgentSession", () => {
 			await withScenario({ name: `restatement-${rekey}`, responses: responses.map(withPayloadHook) }, async (run) => {
 				expect(run.extensionErrors).toEqual([]);
 				expect(run.compactionRequests).toEqual([
-					{ customInstructions: BOUNDARY_COMPACTION_INSTRUCTIONS, reason: "manual" },
+					{ customInstructions: expect.stringContaining('"stepId":"build","goal":"build it"'), reason: "manual" },
 				]);
 				expect(compactions(run.sessionManager)).toBe(1);
 				expect(reminders(run.sessionManager, POST_COMPACTION_PLAN_REMINDER)).toBe(1);
@@ -397,7 +402,7 @@ describe("Online Context Compact with a real AgentSession", () => {
 				// request, 0.84.2 after the run because the aborted faux request ends with an error stop.
 				expect(run.compactionEnds).toEqual(["threshold:aborted", "manual"]);
 				expect(run.compactionRequests.filter((request) => request.reason !== "threshold")).toEqual([
-					{ customInstructions: BOUNDARY_COMPACTION_INSTRUCTIONS, reason: "manual" },
+					{ customInstructions: expect.stringContaining('"stepId":"build","goal":"build it"'), reason: "manual" },
 				]);
 				expect(compactions(run.sessionManager)).toBe(1);
 				expect(reminders(run.sessionManager, POST_COMPACTION_PLAN_REMINDER)).toBe(1);
@@ -420,7 +425,7 @@ describe("Online Context Compact with a real AgentSession", () => {
 			},
 			async (run) => {
 				expect(run.compactionRequests).toEqual([
-					{ customInstructions: BOUNDARY_COMPACTION_INSTRUCTIONS, reason: "manual" },
+					{ customInstructions: expect.stringContaining('"stepId":"build","goal":"build it"'), reason: "manual" },
 				]);
 				expect(compactions(run.sessionManager)).toBe(0);
 				expect(reminders(run.sessionManager, POST_COMPACTION_PLAN_REMINDER)).toBe(0);
@@ -556,8 +561,10 @@ describe.skipIf(createCodemodeExtension === undefined)("Online Context Compact w
 
 					// The direct boundary compacts and the continuation runs.
 					expect(run.compactionRequests).toEqual([
-						{ customInstructions: BOUNDARY_COMPACTION_INSTRUCTIONS, reason: "manual" },
+						{ customInstructions: expect.stringContaining('"stepId":"build","goal":"build it"'), reason: "manual" },
 					]);
+					expect(run.compactionRequests[0]?.customInstructions).toContain(BOUNDARY_COMPACTION_INSTRUCTIONS);
+					expect(run.compactionRequests[0]?.customInstructions).toContain('"verification":["tests passed"]');
 					expect(compactions(run.sessionManager)).toBe(1);
 					expect(reminders(run.sessionManager, POST_COMPACTION_PLAN_REMINDER)).toBe(1);
 					expect(run.faux.state.callCount).toBe(4);
