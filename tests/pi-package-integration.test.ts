@@ -2,9 +2,12 @@
  * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: MIT
  */
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import {
 	CONFIG_DIR_NAME,
 	createAgentSession,
@@ -16,11 +19,18 @@ import {
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { expect, it } from "vitest";
 import { DEFAULT_CONFIG } from "../src/sol-pi/config.ts";
+import { piCliPath } from "./helpers.ts";
 
-it("loads the package entrypoint and executes fused tools in an all-enabled Pi session", async () => {
+it.each([
+	{ storage: "persistent", exitCode: 0 },
+	{ storage: "in-memory", exitCode: 0 },
+	{ storage: "persistent", exitCode: 7 },
+	{ storage: "in-memory", exitCode: 7 },
+])("loads fused tools in an all-enabled $storage Pi session (exit $exitCode)", async ({ storage, exitCode }) => {
 	const cwd = await mkdtemp(join(tmpdir(), "sol-pi-package-"));
 	const agentDir = join(cwd, "agent");
 	let session: AgentSession | undefined;
+	let ephemeralSessionId: string | undefined;
 	try {
 		await mkdir(agentDir);
 		await mkdir(join(cwd, CONFIG_DIR_NAME));
@@ -36,7 +46,7 @@ it("loads the package entrypoint and executes fused tools in an all-enabled Pi s
 			fauxAssistantMessage(fauxToolCall("write", {
 				path: "result.txt",
 				content: "package integration passed\n",
-				then_run: { command: "cat result.txt" },
+				then_run: { command: `cat result.txt; exit ${exitCode}` },
 			}), { stopReason: "toolUse" }),
 			fauxAssistantMessage(fauxToolCall("update_plan", {
 				steps: [{ id: "verify", goal: "verify the package", status: "in_progress" }],
@@ -62,7 +72,10 @@ it("loads the package entrypoint and executes fused tools in an all-enabled Pi s
 		});
 		await resourceLoader.reload();
 		expect(resourceLoader.getExtensions().errors).toEqual([]);
-		const sessionManager = SessionManager.create(cwd, join(agentDir, "sessions"));
+		const sessionManager = storage === "persistent"
+			? SessionManager.create(cwd, join(agentDir, "sessions"))
+			: SessionManager.inMemory(cwd);
+		if (storage === "in-memory") ephemeralSessionId = sessionManager.getSessionId();
 		({ session } = await createAgentSession({
 			cwd,
 			agentDir,
@@ -75,7 +88,9 @@ it("loads the package entrypoint and executes fused tools in an all-enabled Pi s
 		const errors: unknown[] = [];
 		await session.bindExtensions({ onError: (error) => errors.push(error) });
 		expect(session.getActiveToolNames()).toEqual(expect.arrayContaining(["edit", "write", "obs_recall", "update_plan"]));
-		const solPi = resourceLoader.getExtensions().extensions.find((extension) => extension.path.endsWith("src/sol-pi/index.ts"));
+		const solPi = resourceLoader.getExtensions().extensions.find((extension) =>
+			extension.path.split("\\").join("/").endsWith("src/sol-pi/index.ts")
+		);
 		expect(solPi?.handlers.has("tool_result")).toBe(true);
 		expect(solPi?.handlers.has("context")).toBe(true);
 		expect(solPi?.handlers.has("agent_settled")).toBe(true);
@@ -85,10 +100,12 @@ it("loads the package entrypoint and executes fused tools in an all-enabled Pi s
 			entry.type === "message" && entry.message.role === "toolResult" ? [entry.message] : [],
 		);
 		expect(toolResults).toHaveLength(2);
-		expect(toolResults.every((result) => !result.isError)).toBe(true);
+		expect(toolResults.find((result) => result.toolName === "update_plan")?.isError).toBe(false);
 		const writeResult = toolResults.find((result) => result.toolName === "write");
+		expect(writeResult?.isError).toBe(exitCode !== 0);
 		const observation = writeResult?.content.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n");
-		expect(observation).toContain("[then_run:succeeded]");
+		expect(observation).toContain(exitCode === 0 ? "[then_run:succeeded]" : "[then_run:failed]");
+		if (exitCode !== 0) expect(observation).not.toContain("[then_run:succeeded]");
 		expect(observation).toContain("package integration passed");
 		expect(await readFile(join(cwd, "result.txt"), "utf8")).toBe("package integration passed\n");
 		expect(session.getLastAssistantText()).toBe("package smoke complete");
@@ -97,6 +114,110 @@ it("loads the package entrypoint and executes fused tools in an all-enabled Pi s
 		expect(errors).toEqual([]);
 	} finally {
 		session?.dispose();
+		if (ephemeralSessionId) {
+			const roots = (await readdir(tmpdir())).filter((name) => name.startsWith(`sol-pi-${ephemeralSessionId}-`));
+			await Promise.all(roots.map((name) => rm(join(tmpdir(), name), { recursive: true, force: true })));
+		}
+		await rm(cwd, { recursive: true, force: true });
+	}
+}, 30_000);
+
+it.each([false, true])("starts and shuts down the offline RPC CLI without a prompt (all enabled: %s)", async (allEnabled) => {
+	const cwd = await mkdtemp(join(tmpdir(), "sol-pi-rpc-startup-"));
+	try {
+		const agentDir = join(cwd, "agent");
+		await mkdir(agentDir);
+		await mkdir(join(cwd, CONFIG_DIR_NAME));
+		await writeFile(join(cwd, CONFIG_DIR_NAME, "sol-pi.json"), JSON.stringify({
+			...DEFAULT_CONFIG,
+			actionFusion: true,
+			observationPack: true,
+			evidencePreservingReducer: allEnabled,
+			onlineContextCompact: allEnabled,
+		}));
+		const running = promisify(execFile)(process.execPath, [
+			piCliPath(), "--offline", "--approve", "--no-session", "--mode", "rpc",
+			"--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files",
+			"-e", join(process.cwd(), "src/sol-pi/index.ts"),
+		], {
+			cwd,
+			env: { ...process.env, PI_CODING_AGENT_DIR: agentDir },
+			timeout: 20_000,
+		});
+		running.child.stdin?.end(`${JSON.stringify({ id: "startup", type: "get_state" })}\n`);
+		const { stdout, stderr } = await running;
+		const records = stdout.trim().split("\n").map((line) => JSON.parse(line));
+		expect(records.find((record) => record.id === "startup")).toMatchObject({
+			type: "response", command: "get_state", success: true,
+		});
+		expect(stderr).not.toMatch(/error|failed/iu);
+		expect(records.some((record) => record.type === "agent_start")).toBe(false);
+	} finally {
+		await rm(cwd, { recursive: true, force: true });
+	}
+}, 30_000);
+
+it("archives tool output with the real Pi --no-session CLI and retains it after exit", async () => {
+	const cwd = await mkdtemp(join(tmpdir(), "sol-pi-no-session-"));
+	try {
+		const agentDir = join(cwd, "agent");
+		const temporaryDir = join(cwd, "tmp");
+		await mkdir(agentDir);
+		await mkdir(temporaryDir);
+		await mkdir(join(cwd, CONFIG_DIR_NAME));
+		await writeFile(join(cwd, CONFIG_DIR_NAME, "sol-pi.json"), JSON.stringify({
+			...DEFAULT_CONFIG,
+			actionFusion: true,
+			observationPack: true,
+			evidencePreservingReducer: true,
+			onlineContextCompact: true,
+		}));
+		const body = "ephemeral CLI evidence\n".repeat(800);
+		await writeFile(join(cwd, "evidence.txt"), body);
+		const providerPath = join(cwd, "test-provider.ts");
+		const fauxPath = fileURLToPath(import.meta.resolve("@earendil-works/pi-ai/providers/faux"));
+		await writeFile(providerPath, `
+import { fauxProvider, fauxAssistantMessage, fauxToolCall } from ${JSON.stringify(fauxPath)};
+export default function (pi) {
+	const faux = fauxProvider({
+		provider: "sol-pi-no-session-test", api: "sol-pi-no-session-test-api",
+		models: [{ id: "ephemeral", contextWindow: 200000, maxTokens: 4096 }],
+	});
+	faux.setResponses([
+		fauxAssistantMessage(fauxToolCall("read", { path: "evidence.txt" }), { stopReason: "toolUse" }),
+		fauxAssistantMessage("no-session smoke complete"),
+	]);
+	pi.registerProvider(faux.provider);
+	pi.on("session_start", (_event, ctx) => {
+		if (ctx.sessionManager.getSessionDir() || ctx.sessionManager.getSessionFile()) {
+			throw new Error("Expected an ephemeral CLI session");
+		}
+	});
+}
+`);
+		const running = promisify(execFile)(process.execPath, [
+			piCliPath(), "--offline", "--approve", "--no-session",
+			"--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes",
+			"-e", join(process.cwd(), "src/sol-pi/index.ts"), "-e", providerPath,
+			"--provider", "sol-pi-no-session-test", "--model", "ephemeral",
+			"--thinking", "off", "-p", "read the evidence",
+		], {
+			cwd,
+			env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, TMPDIR: temporaryDir, TMP: temporaryDir, TEMP: temporaryDir },
+			timeout: 20_000,
+		});
+		running.child.stdin?.end();
+		const { stdout, stderr } = await running;
+		expect(stdout).toContain("no-session smoke complete");
+		expect(stderr).not.toMatch(/error|requires a persistent/iu);
+		const roots = (await readdir(temporaryDir)).filter((name) => name.startsWith("sol-pi-"));
+		expect(roots).toHaveLength(1);
+		const objectsDir = join(temporaryDir, roots[0]!, "observation-pack", "objects");
+		const objects = await readdir(objectsDir);
+		expect(objects).toHaveLength(1);
+		expect(await readFile(join(objectsDir, objects[0]!), "utf8")).toBe(body);
+		expect((await readdir(agentDir, { recursive: true })).some((name) => name.endsWith(".jsonl"))).toBe(false);
+	} finally {
 		await rm(cwd, { recursive: true, force: true });
 	}
 }, 30_000);
