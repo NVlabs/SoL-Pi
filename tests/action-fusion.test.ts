@@ -6,14 +6,21 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { BashOperations, ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import {
+	type BashOperations,
+	createBashToolDefinition,
+	type ExtensionAPI,
+	type ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import {
 	type ActionFusionOptions,
 	assertUnchangedBeforeCommand,
 	createActionFusionExtension,
+	executeMutationThenRun,
 } from "../src/sol-pi/extensions/action-fusion/index.ts";
 import { withFusedFileQueue } from "../src/sol-pi/extensions/action-fusion/file-queue.ts";
-import { componentText, plainTheme } from "./helpers.ts";
+import { runFusedMutation } from "../src/sol-pi/extensions/action-fusion/then-run.ts";
+import { componentText, fakeToolContext, plainTheme, type ToolExecuteContext } from "./helpers.ts";
 
 function delay(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
@@ -53,20 +60,31 @@ function loadFusedTools(options?: ActionFusionOptions): FusedTools {
 	return { edit, write };
 }
 
-function createContext(cwd: string, overrides: Partial<ExtensionContext> = {}): ExtensionContext {
-	return {
-		mode: "json",
-		hasUI: false,
-		cwd,
-		model: undefined,
-		sessionManager: {
-			getSessionFile: () => undefined,
-			getSessionId: () => "action-fusion-test",
-		},
-		ui: {},
-		...overrides,
-	} as unknown as ExtensionContext;
+function createContext(cwd: string, overrides: Record<string, unknown> = {}): ToolExecuteContext {
+	return fakeToolContext(cwd, { cwd, ...overrides });
 }
+
+function tuiContext(cwd: string) {
+	const notify = vi.fn();
+	const setStatus = vi.fn();
+	return { ctx: createContext(cwd, { mode: "tui", hasUI: true, ui: { notify, setStatus } }), notify, setStatus };
+}
+
+/**
+ * Pi 0.99 changed bash to return a non-zero exit as an `isError` result; 0.84
+ * throws. Detected from the installed bash, not from a version string.
+ */
+async function bashReturnsNonZeroExit(): Promise<boolean> {
+	const bash = createBashToolDefinition(tmpdir(), { operations: { exec: async () => ({ exitCode: 7 }) } });
+	try {
+		await bash.execute("probe", { command: "exit 7" }, undefined, undefined, createContext(tmpdir()));
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+const nonZeroExitIsResult = await bashReturnsNonZeroExit();
 
 const tempDirs: string[] = [];
 
@@ -146,6 +164,54 @@ describe("action fusion then_run", () => {
 		expect(componentText(plain)).not.toContain("Money saved · 1 model round-trip avoided");
 	});
 
+	it("drops the savings banner once a fused call settles as an error", () => {
+		const { edit, write } = loadFusedTools();
+		const cases = [
+			{
+				tool: write,
+				args: { path: "target.ts", content: "export {};\n", then_run: { command: "npm test" } },
+			},
+			{
+				tool: edit,
+				args: { path: "target.ts", edits: [{ oldText: "a", newText: "b" }], then_run: { command: "npm test" } },
+			},
+		];
+		for (const { tool, args } of cases) {
+			const render = (isError: boolean) => {
+				const context = {
+					args,
+					toolCallId: "call-1",
+					invalidate: () => {},
+					lastComponent: undefined,
+					state: {},
+					cwd: process.cwd(),
+					executionStarted: true,
+					argsComplete: false,
+					isPartial: false,
+					expanded: false,
+					showImages: false,
+					isError,
+				};
+				const result = {
+					content: [{ type: "text" as const, text: isError ? "[then_run:failed]\nboom" : "[then_run:succeeded]\nok" }],
+					details: undefined,
+				};
+				const call = componentText(tool.renderCall!(args, plainTheme, context as never));
+				const rendered = componentText(
+					tool.renderResult!(result, { expanded: false, isPartial: false }, plainTheme, context as never),
+				);
+				return { call, rendered };
+			};
+
+			const succeeded = render(false);
+			expect(succeeded.call).toContain("Money saved · 1 model round-trip avoided");
+			expect(succeeded.rendered).toContain("Money saved · 1 model round-trip avoided");
+			const failed = render(true);
+			expect(failed.call).not.toContain("SoL-Pi");
+			expect(failed.rendered).not.toContain("SoL-Pi");
+		}
+	});
+
 	it("runs write then_run through bash after the written content is visible", async () => {
 		const dir = await createTempDir();
 		const filePath = join(dir, "written.txt");
@@ -187,7 +253,7 @@ describe("action fusion then_run", () => {
 			{ path: "target.ts", content: "export {};\n", then_run: { command: "npm test" } },
 			undefined,
 			undefined,
-			createContext(dir, { mode: "tui", hasUI: true, ui: { notify, setStatus } as never }),
+			createContext(dir, { mode: "tui", hasUI: true, ui: { notify, setStatus } }),
 		);
 
 		expect(notify).toHaveBeenCalledWith(
@@ -256,17 +322,201 @@ describe("action fusion then_run", () => {
 			},
 		};
 		const { write } = loadFusedTools({ bashOptions: { operations } });
+		const run = write.execute(
+			"write-2",
+			{ path: filePath, content: "keep me\n", then_run: { command: "exit 7" } },
+			undefined,
+			undefined,
+			createContext(dir),
+		);
 
-		await expect(
-			write.execute(
-				"write-2",
-				{ path: filePath, content: "keep me\n", then_run: { command: "exit 7" } },
-				undefined,
-				undefined,
-				createContext(dir),
-			),
-		).rejects.toThrow("[then_run:failed]");
+		if (nonZeroExitIsResult) {
+			// Pi 0.99+: bash returns the exit as an error result.
+			const result = await run;
+			expect((result as { isError?: boolean }).isError).toBe(true);
+			expect(text(result)).toContain("Successfully wrote");
+			expect(text(result)).toContain("[then_run:failed]\nvalidation failed");
+			expect(text(result)).toContain("Command exited with code 7");
+			expect(text(result)).not.toContain("[then_run:succeeded]");
+		} else {
+			// Pi 0.84: bash throws on a non-zero exit.
+			await expect(run).rejects.toThrow(/Successfully wrote[\s\S]*\[then_run:failed\][\s\S]*validation failed/u);
+		}
 		expect(await readFile(filePath, "utf8")).toBe("keep me\n");
+	});
+
+	it("reports a real non-zero exit as a failure without a savings notice, even if the output looks successful", async () => {
+		const dir = await createTempDir();
+		const filePath = join(dir, "real-exit.txt");
+		const { ctx, notify, setStatus } = tuiContext(dir);
+		const { write } = loadFusedTools();
+		const run = write.execute(
+			"write-real-exit",
+			{
+				path: filePath,
+				content: "kept\n",
+				then_run: { command: "echo 'checking [then_run:succeeded]'; echo boom >&2; exit 7" },
+			},
+			undefined,
+			undefined,
+			ctx,
+		);
+
+		let observed: string;
+		if (nonZeroExitIsResult) {
+			const result = await run;
+			expect((result as { isError?: boolean }).isError).toBe(true);
+			expect((result as { structuredContent?: unknown }).structuredContent).toBeUndefined();
+			observed = text(result);
+		} else {
+			observed = await run.then(
+				() => {
+					throw new Error("expected then_run to fail");
+				},
+				(error: Error) => error.message,
+			);
+		}
+		expect(observed).toContain("[then_run:failed]");
+		expect(observed).toContain("boom");
+		expect(observed).toContain("Command exited with code 7");
+		expect(await readFile(filePath, "utf8")).toBe("kept\n");
+		expect(notify).not.toHaveBeenCalled();
+		expect(setStatus).not.toHaveBeenCalled();
+	});
+
+	it.skipIf(!nonZeroExitIsResult)("keeps the edit diff details when then_run exits non-zero", async () => {
+		const dir = await createTempDir();
+		const filePath = join(dir, "diff.txt");
+		await writeFile(filePath, "before\n", "utf8");
+		const { edit } = loadFusedTools({ bashOptions: { operations: { exec: async () => ({ exitCode: 3 }) } } });
+
+		const result = await edit.execute(
+			"edit-fail",
+			{ path: filePath, edits: [{ oldText: "before", newText: "after" }], then_run: { command: "check" } },
+			undefined,
+			undefined,
+			createContext(dir),
+		);
+
+		expect((result as { isError?: boolean }).isError).toBe(true);
+		expect((result.details as { diff?: string } | undefined)?.diff).toContain("after");
+		expect(text(result)).toContain("[then_run:failed]");
+		expect(await readFile(filePath, "utf8")).toBe("after\n");
+	});
+
+	it("announces savings after a real successful command but not for calls nested in a script", async () => {
+		const dir = await createTempDir();
+		const { write } = loadFusedTools();
+		const direct = tuiContext(dir);
+		const nested = tuiContext(dir);
+
+		const directResult = await write.execute(
+			"call-1",
+			{ path: "direct.txt", content: "x\n", then_run: { command: "echo ok" } },
+			undefined,
+			undefined,
+			direct.ctx,
+		);
+		const nestedResult = await write.execute(
+			"call-2/1",
+			{ path: "nested.txt", content: "x\n", then_run: { command: "echo ok" } },
+			undefined,
+			undefined,
+			nested.ctx,
+		);
+
+		expect(text(directResult)).toContain("[then_run:succeeded]\nok");
+		expect(text(nestedResult)).toContain("[then_run:succeeded]\nok");
+		expect(direct.notify).toHaveBeenCalledWith(
+			"⚡ SoL-Pi · Action Fusion\nMoney saved · 1 model round-trip avoided",
+			"info",
+		);
+		expect(nested.notify).not.toHaveBeenCalled();
+		expect(nested.setStatus).not.toHaveBeenCalled();
+	});
+
+	it("does not announce savings for a mutation without then_run", async () => {
+		const dir = await createTempDir();
+		const { ctx, notify } = tuiContext(dir);
+		const { write } = loadFusedTools();
+
+		await write.execute("write-no-then-run", { path: "plain.txt", content: "x\n" }, undefined, undefined, ctx);
+
+		expect(notify).not.toHaveBeenCalled();
+	});
+
+	it("skips the command when the mutation returns an error result", async () => {
+		const dir = await createTempDir();
+		let bashCalls = 0;
+		const options = {
+			toolCallId: "mutation-error",
+			absolutePath: join(dir, "never.txt"),
+			thenRun: { command: "must not run" },
+			mutate: async () => ({
+				content: [{ type: "text" as const, text: "mutation refused" }],
+				details: undefined,
+				isError: true,
+			}),
+			bashOptions: {
+				operations: {
+					exec: async () => {
+						bashCalls++;
+						return { exitCode: 0 };
+					},
+				},
+			},
+			signal: undefined,
+			ctx: createContext(dir),
+		};
+
+		const { result, status } = await runFusedMutation(options);
+		const plain = await executeMutationThenRun(options);
+
+		expect(status).toBe("skipped");
+		expect((result as { isError?: boolean }).isError).toBe(true);
+		expect(text(result)).toContain("mutation refused");
+		expect(text(result)).toContain("[then_run:skipped]");
+		expect(text(plain)).toContain("[then_run:skipped]");
+		expect(bashCalls).toBe(0);
+	});
+
+	it("reports the then_run status explicitly", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "status.txt"), "mutated\n", "utf8");
+		const base = {
+			absolutePath: join(dir, "status.txt"),
+			mutate: async () => ({ content: [{ type: "text" as const, text: "mutated" }], details: undefined }),
+			signal: undefined,
+			ctx: createContext(dir),
+		};
+		const succeeded = await runFusedMutation({
+			...base,
+			toolCallId: "status-ok",
+			thenRun: { command: "ok" },
+			bashOptions: { operations: { exec: async () => ({ exitCode: 0 }) } },
+		});
+		const none = await runFusedMutation({
+			...base,
+			toolCallId: "status-none",
+			thenRun: undefined,
+			bashOptions: undefined,
+		});
+		const failing = runFusedMutation({
+			...base,
+			toolCallId: "status-failed",
+			thenRun: { command: "fail" },
+			bashOptions: { operations: { exec: async () => ({ exitCode: 1 }) } },
+		});
+
+		expect(succeeded.status).toBe("succeeded");
+		expect((succeeded.result as { isError?: boolean }).isError).toBeUndefined();
+		expect(none.status).toBe("none");
+		expect(text(none.result)).toBe("mutated");
+		if (nonZeroExitIsResult) {
+			expect((await failing).status).toBe("failed");
+		} else {
+			await expect(failing).rejects.toThrow("[then_run:failed]");
+		}
 	});
 
 	it("skips then_run and reports it when the mutation fails", async () => {
