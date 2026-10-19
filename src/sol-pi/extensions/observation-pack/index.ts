@@ -81,10 +81,13 @@ export function createObservationPackExtension(): ExtensionFactory {
 			}),
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 				if (!isObservationId(params.id)) throw new Error(`Unknown observation id: ${params.id}`);
+				const root = runtimeRoot(ctx);
 				const offset = params.offset ?? 0;
 				let chunk: RecallChunk;
 				try {
-					chunk = await readRecallChunk(observationPath(runtimeRoot(ctx), params.id), offset, RECALL_LIMITS);
+					chunk = await readRecallChunk(
+						observationPath(root, params.id), offset, RECALL_LIMITS, ctx.sessionManager.getSessionDir() || root,
+					);
 				} catch (error) {
 					if (error instanceof Error && "code" in error && error.code === "ENOENT") {
 						throw new Error(`Unknown observation id: ${params.id}`);
@@ -161,7 +164,7 @@ export function createObservationPackExtension(): ExtensionFactory {
 				try {
 					const observation = createObservation(message, root);
 					if (!observation) continue;
-					await ensureStored(observation);
+					await ensureStored(observation, ctx.sessionManager.getSessionDir() || root);
 
 					const sendCountKey = `${root}\0${observation.id}`;
 					const previousSends = sentCounts.get(sendCountKey) ?? priorAssistantCounts[index] ?? 0;

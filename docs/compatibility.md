@@ -66,6 +66,12 @@ ObservationPack changes only the messages projected through the public `context`
 
 Original bytes and the JSONL ledger live under the session-derived SoL-Pi directory.
 
+The directory returned by Pi's `SessionManager.getSessionDir()` is the trusted storage boundary; Pi's session directory and its ancestors must remain under the user's control. Before creating or opening an object, ObservationPack checks every descendant directory (`sol-pi`, the session id, `observation-pack`, and `objects`). Missing directories are created individually, and each component must be an ordinary directory before traversal continues. The complete descendant chain is checked again after object open, before reading or writing payload bytes. Pre-existing symlinks and Windows junctions reported as symbolic links by Node's `lstat()` are rejected, including a linked runtime root.
+
+For `--no-session` and in-memory sessions, the private runtime directory created by SoL-Pi is the trusted boundary instead; its `observation-pack` and `objects` descendants receive the same checks.
+
+Object access also uses `O_NOFOLLOW` where available, and requires the pathname and open handle to identify the same regular file. These checks detect the tested directory substitutions and path-restoration races. Node's portable filesystem API does not provide directory-handle-relative traversal: the checks are not an atomic defense against a process that can repeatedly replace storage ancestors during validation. Other Windows reparse-point types are not covered by the junction tests. Native Windows execution remains an outstanding validation gate; the simulated no-`O_NOFOLLOW` lifecycle does not establish native reparse-point safety.
+
 ## Evidence-Preserving Reducer
 
 The reducer handles public `tool_result` events and resolves the configured reducer provider/model through Pi's model registry before calling `ExtensionContext.modelRegistry.complete()`, which Pi 0.84.2 and 1.0.x provide. The reducer preserves the original result whenever the configured reducer model is unavailable or eligibility, model-call, schema, source-hash, exact-quote, size, or likely-secret checks fail.
