@@ -5,9 +5,9 @@
 import type { CompactOptions } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { describe, expect, it, vi } from "vitest";
-import { createOnlineContextCompactExtension, POST_COMPACTION_PLAN_REMINDER, SKIPPED_COMPACTION_REMINDER } from "../src/sol-pi/extensions/online-context-compact/extension.ts";
+import { COMPACTION_FAILED_RESUME_REMINDER, createOnlineContextCompactExtension, POST_COMPACTION_PLAN_REMINDER, SKIPPED_COMPACTION_REMINDER } from "../src/sol-pi/extensions/online-context-compact/extension.ts";
 import { restoreOnlineState } from "../src/sol-pi/extensions/online-context-compact/state.ts";
-import { FakePi, FakeSessionManager, fakeContext } from "./helpers.ts";
+import { FakePi, FakeSessionManager, fakeToolContext } from "./helpers.ts";
 
 async function scenario(error?: Error, unrelatedCompactionAfterError = false) {
 	const manager = new FakeSessionManager();
@@ -27,14 +27,16 @@ async function scenario(error?: Error, unrelatedCompactionAfterError = false) {
 		}
 	});
 	// Deferred hosts stay idle until every agent_settled handler returns.
-	const ctx = fakeContext(manager, { abort, compact, isIdle: () => true,
+	const ctx = fakeToolContext(manager, { abort, compact, isIdle: () => true,
 		getContextUsage: () => ({ tokens: 195_000, contextWindow: 200_000, percent: 97.5 }) });
 	await pi.emit("session_start", {}, ctx);
 	await pi.emitContext(messages, ctx);
 	async function boundary(id: string) {
+		await pi.emitContext(messages, ctx);
 		await pi.emit("before_provider_request", {}, ctx);
 		const steps = [{ id, goal: "do work", status: "completed" }, { id: "remaining", goal: "remaining work", status: "pending" }];
 		await pi.tool("update_plan").execute(`${id}-open`, { steps: steps.map((step) => step.id === id ? { ...step, status: "in_progress" } : step) }, undefined, undefined, ctx);
+		await pi.emitContext(messages, ctx);
 		await pi.emit("before_provider_request", {}, ctx);
 		const result = await pi.tool("update_plan").execute(id, { steps }, undefined, undefined, ctx);
 		await pi.emit("turn_end", { message: fauxAssistantMessage("boundary"), toolResults: [{ toolCallId: id, toolName: "update_plan", isError: false }] }, ctx);
@@ -87,11 +89,12 @@ describe("Online Context Compact recovery", () => {
 		expect(pi.sentMessages).toHaveLength(0);
 	});
 
-	it("still reports genuine compaction failures", async () => {
+	it("resumes the stopped task and still reports genuine compaction failures", async () => {
 		const { pi, ctx, boundary } = await scenario(new Error("summarizer unavailable"));
 		await boundary("first");
 		await expect(pi.emit("agent_settled", {}, ctx)).rejects.toThrow("summarizer unavailable");
-		expect(pi.sentMessages).toHaveLength(0);
+		expect(pi.sentMessages).toHaveLength(1);
+		expect(pi.sentMessages[0]?.message.content).toBe(COMPACTION_FAILED_RESUME_REMINDER);
 	});
 
 	it("does not charge a failed attempt's debt to another compaction during recovery", async () => {

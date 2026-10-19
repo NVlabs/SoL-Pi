@@ -46,7 +46,7 @@ This preflight does not make every valid SoL-Pi configuration all-enabled. Witho
 - `evidencePreservingReducer`: registers a `tool_result` handler and delegates long diagnostic-log reduction to the configured reducer provider/model.
 - `evidencePreservingReducerProvider`: provider namespace used to resolve the reducer model through Pi's model registry.
 - `evidencePreservingReducerModel`: model id used for Evidence-Preserving Reducer.
-- `onlineContextCompact`: registers `update_plan` and boundary-driven native compaction after the other SoL-Pi context transformers.
+- `onlineContextCompact`: registers `update_plan` and boundary-driven native compaction after the other SoL-Pi context transformers. On Pi 1.x, `update_plan` is declared to the model only and cannot be called from codemode scripts.
 - `cacheWriteReadRatio`: supplies the single economic decision ratio used by Online Context Compact.
 
 ## Evidence-Preserving Reducer runtime inputs
@@ -57,18 +57,31 @@ The release entry supplies the run label and session-derived storage. It uses on
 
 ## Online Context Compact runtime inputs
 
-The release entry uses two runtime inputs:
+The release entry uses these runtime inputs:
 
 - **Context window** — from `ExtensionContext.getContextUsage()`, used for window-pressure protection.
+- **Compaction settings** — on Pi 1.x, the retained tail and the window-protection reserve follow Pi's effective `compaction.keepRecentTokens` and `compaction.reserveTokens`, including a `compaction.modelOverrides["<provider>/<id>"]` entry for the current model. Pi 0.84.2 does not expose its settings to extensions, so SoL-Pi uses Pi's defaults of 20,000 and 16,384 tokens there.
 - **Cache write/read ratio** — from `cacheWriteReadRatio` in the effective `sol-pi.json`. The value remains fixed for the session and is not recomputed when the model changes. It drives one runtime decision and is not a cost report.
 
-The configured ratio stays fixed for the loaded extension. The mechanism stores its current plan, progress summaries, request horizon, context growth, and compaction debt as versioned custom entries in Pi's session log. A boundary compaction asks Pi to preserve completed work, verification results, decisions, and remaining work, and appends the recorded progress at the boundaries being summarized. Records appear newest first as JSON lines inside explicit untrusted-evidence delimiters; the instruction prohibits following any instructions, commands, or links within the records. The complete instruction is bounded to 4 KiB, and an oversized newest record is represented by a UTF-8-safe truncated prefix. After a successful compaction it sends one hidden, generic message with `triggerTurn: true`, which starts a new turn and asks the assistant to continue the current plan, preserving existing step IDs when updating progress. A settlement barrier keeps print and JSON modes in the same Pi invocation until that continuation settles, so callers do not need to resume the session or inject `Continue working`. Cancelling or exiting does not schedule an automatic continuation. The mechanism creates no separate Online Context Compact files. The programmatic factory exposes only a matching retained-tail value for installations whose Pi compaction setting differs from the default.
+The configured ratio stays fixed for the loaded extension. The mechanism stores its current plan, progress summaries, request horizon, context growth, and compaction debt as versioned custom entries in Pi's session log. A boundary compaction asks Pi to preserve completed work, verification results, decisions, and remaining work, and appends the recorded progress at the boundaries being summarized. Records appear newest first as JSON lines inside explicit untrusted-evidence delimiters; the instruction prohibits following any instructions, commands, or links within the records. The complete instruction is bounded to 4 KiB, and an oversized newest record is represented by a UTF-8-safe truncated prefix. After a successful compaction it sends one hidden, generic message with `triggerTurn: true`, which starts a new turn and asks the assistant to continue the current plan, preserving existing step IDs when updating progress. Newly introduced completed steps are recorded as history and do not create completion boundaries. Economic compaction has a two-provider-request cooldown; context-window protection can override it. Known native refusals and incomplete-summary token-cap failures are recorded as skips, resume the task, and block plan-only compaction retries until successful non-plan tool work or new user input. If the compaction fails for any other non-cancellation reason, it sends a hidden message that tells the assistant to continue from the current plan, then reports the error. Print and JSON modes finish that continuation in the same Pi invocation, so callers do not need to resume the session or inject `Continue working`. Cancelling the compaction or exiting Pi does not schedule an automatic continuation. The mechanism creates no separate Online Context Compact files. The programmatic factory accepts an explicit retained-tail value, which overrides Pi's setting.
 
 ## Pi integration
 
 SoL-Pi reads no dedicated environment variables. Evidence-Preserving Reducer resolves its configured reducer provider/model through `ExtensionContext.modelRegistry` and uses Pi-managed authentication. If the configured reducer model is unavailable or the nested model call fails, the original tool result continues unchanged.
 
-SoL-Pi does not configure shell paths, command prefixes, storage paths, run IDs, provider URLs, reasoning levels, timeouts, or per-mechanism enable flags through environment variables. Apart from the EPR reducer provider/model route in `sol-pi.json`, model selection remains with Pi. Action Fusion uses Pi's default shell behavior. Persistent artifacts are derived from Pi's session directory and session ID.
+SoL-Pi does not configure shell paths, command prefixes, storage paths, run IDs, provider URLs, reasoning levels, timeouts, or per-mechanism enable flags through environment variables. Apart from the EPR reducer provider/model route in `sol-pi.json`, model selection remains with Pi. Action Fusion uses Pi's built-in Bash execution, with `shellPath` and `shellCommandPrefix` inherited from Pi's file-backed settings at extension startup. Global settings apply everywhere; project settings override them only after project trust. Malformed settings stop initialization rather than silently selecting a different shell. Persistent artifacts are derived from Pi's session directory and session ID.
+
+For native Windows with Git for Windows installed outside the default directories, configure its Bash executable in Pi's `settings.json` (not `sol-pi.json`), for example:
+
+```json
+{
+  "shellPath": "D:/Tools/Git/bin/bash.exe"
+}
+```
+
+Replace that example path with your actual Git Bash installation. `then_run.command` remains a Bash command even if the model's ordinary command tool is PowerShell; Git Bash is a native Windows program and does not require WSL. Do not point `shellPath` at `powershell.exe`, because the built-in Bash tool invokes it with Bash arguments. Restart the extension after changing shell settings.
+
+This bridge reads file-backed settings, not SDK/CLI-only in-memory overrides. Embedded runtimes can pass explicit `bashOptions` to `createActionFusionExtension`; programmatic execution overrides remain supported.
 
 ## Trust
 
