@@ -38,8 +38,9 @@ export async function archiveBody(root: string, body: string): Promise<ArchiveOb
 		await writeFile(path, body, { encoding: "utf8", flag: "wx", mode: 0o600 });
 	} catch (error) {
 		if (!isRecord(error) || error.code !== "EEXIST") throw error;
-		const existing = await readFile(path, "utf8");
-		if (existing !== body || sha256(existing) !== hash) {
+		const existing = await readFile(path);
+		// UTF-8 replacement decoding can make different stored bytes look identical.
+		if (!existing.equals(Buffer.from(body, "utf8"))) {
 			throw new Error(`Reducer archive integrity failure: ${path}`);
 		}
 	}
