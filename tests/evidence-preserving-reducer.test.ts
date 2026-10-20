@@ -15,6 +15,7 @@ import {
 	DIAGNOSTIC_COMMAND,
 	loadReducerConfig,
 	REDUCER_RECEIPT_SCHEMA,
+	type ReducedToolResult,
 } from "../src/sol-pi/extensions/evidence-preserving-reducer/index.ts";
 import { archiveBody } from "../src/sol-pi/extensions/evidence-preserving-reducer/archive.ts";
 import { detailsFullOutputPath } from "../src/sol-pi/extensions/evidence-preserving-reducer/candidate.ts";
@@ -23,6 +24,7 @@ import {
 	type CompatComplete,
 } from "../src/sol-pi/extensions/evidence-preserving-reducer/provider.ts";
 import { runtimeRoot } from "../src/sol-pi/runtime-paths.ts";
+import { formatSavingsBytes } from "../src/sol-pi/tui.ts";
 import { FakePi, FakeSessionManager, fakeContext, fakeToolContext } from "./helpers.ts";
 
 const cleanupPaths: string[] = [];
@@ -378,6 +380,61 @@ describe("evidence-preserving reducer", () => {
 		expect(notify.mock.calls[0]?.[0]).toMatch(
 			/^⚡ SoL-Pi · Luna Delegating\nMoney saved · .+ removed from future prompts$/u,
 		);
+	});
+
+	it.each([
+		{ name: "bash grows", fused: false, padding: 0 },
+		{ name: "bash shrinks", fused: false, padding: 1_000 },
+		{ name: "fused output grows", fused: true, padding: 0 },
+		{ name: "fused output shrinks", fused: true, padding: 1_000 },
+	])("measures the visible replacement instead of the archive when $name", async ({ fused, padding }) => {
+		vi.useFakeTimers();
+		const root = await storeRoot();
+		const signal = "ERROR test target failed";
+		const fullBody = `${signal}\n${"diagnostic output\n".repeat(400)}`;
+		const outputPath = join(tmpdir(), `pi-bash-${randomUUID()}.log`);
+		await writeFile(outputPath, fullBody);
+		cleanupPaths.push(outputPath);
+		const inline = `${"错".repeat(padding)}\n\n[Showing lines 2-401 of 401. Full output: ${outputPath}]`;
+		const event = fused ? fusedEvent(inline, true) : bashEvent(inline);
+		event.details = { fullOutputPath: outputPath };
+		if (fused) {
+			// This unchanged block must not inflate the reported saving.
+			event.content.unshift({ type: "text", text: "mutation details\n".repeat(200) });
+		}
+		const notify = vi.fn();
+		const setStatus = vi.fn();
+		const { context, manager, pi } = load(root, modelComplete(fullBody, failureReceipt(signal)), ACTIVE_MODEL, {
+			mode: "tui", hasUI: true, ui: { notify, setStatus } as never,
+		});
+
+		const result = await pi.emit("tool_result", event, context) as ReducedToolResult;
+
+		expect(result).toBeDefined();
+		expect(result.isError).toBe(true);
+		const before = event.content.flatMap((block) => block.type === "text" ? [block.text] : []).join("");
+		const after = result.content.flatMap((block) => block.type === "text" ? [block.text] : []).join("");
+		const savedBytes = Buffer.byteLength(before) - Buffer.byteLength(after);
+		const metrics = {
+			sourceBytes: Buffer.byteLength(fullBody),
+			originalContentBytes: Buffer.byteLength(before),
+			reducedContentBytes: Buffer.byteLength(after),
+			contextBytesSaved: savedBytes,
+		};
+		expect(manager.customEntryData().find((entry) => entry.kind === "applied")).toMatchObject(metrics);
+		expect(result.details.evidencePreservingReducer).toMatchObject(metrics);
+		if (fused) expect(after).toContain("mutation details\n".repeat(200));
+		if (padding === 0) {
+			expect(savedBytes).toBeLessThan(0);
+			expect(notify).not.toHaveBeenCalled();
+			expect(setStatus).not.toHaveBeenCalled();
+		} else {
+			expect(savedBytes).toBeGreaterThan(0);
+			expect(notify).toHaveBeenCalledWith(
+				`⚡ SoL-Pi · Luna Delegating\nMoney saved · ${formatSavingsBytes(savedBytes)}`,
+				"info",
+			);
+		}
 	});
 
 	it("uses Pi-resolved authentication on a fork-shaped model registry", async () => {

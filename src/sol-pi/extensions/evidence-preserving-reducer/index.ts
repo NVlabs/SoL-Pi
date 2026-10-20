@@ -55,6 +55,10 @@ function errorName(error: unknown): string | undefined {
 	return isRecord(error) && typeof error.name === "string" ? error.name : undefined;
 }
 
+function contentTextBytes(content: ToolResultEvent["content"]): number {
+	return content.reduce((bytes, block) => bytes + (block.type === "text" ? Buffer.byteLength(block.text, "utf8") : 0), 0);
+}
+
 /**
  * A call another tool made through `executeTool` (a codemode script, for
  * example) carries `parentToolCallId` on pi >= 0.99; older pi never sets it.
@@ -169,6 +173,10 @@ export async function reduceToolResult(
 		});
 		return undefined;
 	}
+	const content = reducible.projectReceipt(receipt);
+	const originalContentBytes = contentTextBytes(event.content);
+	const reducedContentBytes = contentTextBytes(content);
+	const contextBytesSaved = originalContentBytes - reducedContentBytes;
 	journal("applied", {
 		toolCallId: event.toolCallId,
 		commandSha256: sha256(command),
@@ -176,13 +184,18 @@ export async function reduceToolResult(
 		sourceBytes: archive.bytes,
 		receiptSha256: sha256(receipt),
 		receiptBytes,
+		originalContentBytes,
+		reducedContentBytes,
+		contextBytesSaved,
 		evidenceCount: checked.value.evidence.length,
 		uncertain: checked.value.uncertain,
 		usage: provider.usage,
 	});
-	showSolPiSavings(context, "Luna Delegating", formatSavingsBytes(archive.bytes - receiptBytes));
+	if (contextBytesSaved > 0) {
+		showSolPiSavings(context, "Luna Delegating", formatSavingsBytes(contextBytesSaved));
+	}
 	return {
-		content: reducible.projectReceipt(receipt),
+		content,
 		isError: event.isError,
 		details: {
 			...(isRecord(event.details) ? event.details : {}),
@@ -192,6 +205,9 @@ export async function reduceToolResult(
 				sourceBytes: archive.bytes,
 				receiptSha256: sha256(receipt),
 				receiptBytes,
+				originalContentBytes,
+				reducedContentBytes,
+				contextBytesSaved,
 				evidenceCount: checked.value.evidence.length,
 				uncertain: checked.value.uncertain,
 			},
