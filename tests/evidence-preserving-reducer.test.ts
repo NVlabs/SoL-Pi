@@ -17,7 +17,7 @@ import {
 	REDUCER_RECEIPT_SCHEMA,
 } from "../src/sol-pi/extensions/evidence-preserving-reducer/index.ts";
 import { archiveBody } from "../src/sol-pi/extensions/evidence-preserving-reducer/archive.ts";
-import { detailsFullOutputPath } from "../src/sol-pi/extensions/evidence-preserving-reducer/candidate.ts";
+import { detailsFullOutputPath, reducibleToolResult } from "../src/sol-pi/extensions/evidence-preserving-reducer/candidate.ts";
 import {
 	callReducer,
 	type CompatComplete,
@@ -631,6 +631,11 @@ describe("evidence-preserving reducer", () => {
 		const archived = await readFile(String(candidate?.sourcePath), "utf8");
 		expect(archived.startsWith(`${signal}\n1\n`)).toBe(true);
 		expect(archived).toContain(`\n${lines}\n`);
+		if (name === "truncated") {
+			const inline = event.content.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n");
+			expect((await reducibleToolResult({ ...event, details: undefined }))?.body).toBe(archived);
+			expect((await reducibleToolResult(fusedEvent(inline, true)))?.body).toBe(archived);
+		}
 	});
 
 	it.each(["invented", "model-error"] as const)("fails open on %s", async (mode) => {
@@ -724,6 +729,65 @@ describe("evidence-preserving reducer", () => {
 
 		expect(await pi.emit("tool_result", bashEvent(body), context)).toBeUndefined();
 		expect(calls).toBe(0);
+	});
+
+	it("keeps a real untruncated command's output when it mentions another Pi log", async () => {
+		const root = await storeRoot();
+		const old = await realBashEvent("seq 1 5000", root);
+		const oldText = old.content.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n");
+		const oldPath = detailsFullOutputPath(old.details) ?? oldText.match(/Full output: ([^\]\r\n]+)/u)?.[1];
+		expect(oldPath).toBeTruthy();
+		const body = `ERROR current build failed\nFull output: ${oldPath}\n`;
+		await writeFile(join(root, "current.log"), body);
+		const current = await realBashEvent("cat current.log; exit 7 # make", root);
+		const inline = current.content.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n");
+
+		expect(detailsFullOutputPath(current.details)).toBeUndefined();
+		expect((await reducibleToolResult(current))?.body).toBe(inline);
+	});
+
+	it.each(["plain reference", "embedded footer"] as const)(
+		"does not read another log from a fused command's %s",
+		async (kind) => {
+			const outputPath = join(tmpdir(), `pi-bash-${randomUUID()}.log`);
+			await writeFile(outputPath, "ERROR unrelated old command");
+			cleanupPaths.push(outputPath);
+			const reference = kind === "plain reference"
+				? `Full output: ${outputPath}`
+				: `[Showing lines 1-2 of 2. Full output: ${outputPath}]`;
+			const body = `quoted previous output\n\n${reference}\n\nERROR current command failed`;
+
+			expect((await reducibleToolResult(fusedEvent(body, true)))?.body).toBe(body);
+		},
+	);
+
+	it.each([
+		"Showing lines 2-2001 of 2001",
+		"Showing lines 2-401 of 401 (50.0KB limit)",
+		"Showing last 50.0KB of line 1 (line is 75.0KB)",
+	])("reads the terminal Pi footer without metadata: %s", async (description) => {
+		const outputPath = join(tmpdir(), `pi-bash-${randomUUID()}.log`);
+		const oldPath = join(tmpdir(), `pi-bash-${randomUUID()}.log`);
+		const body = "ERROR current full output";
+		await writeFile(outputPath, body);
+		await writeFile(oldPath, "ERROR unrelated old command");
+		cleanupPaths.push(outputPath, oldPath);
+		const inline = `Full output: ${oldPath}\npreview\n\n[${description}. Full output: ${outputPath}]`;
+
+		expect((await reducibleToolResult(bashEvent(inline)))?.body).toBe(body);
+		expect((await reducibleToolResult(fusedEvent(`${inline}\n\nCommand exited with code 7`, true)))?.body).toBe(body);
+	});
+
+	it("prefers Pi's full-output metadata over a footer in the command's text", async () => {
+		const outputPath = join(tmpdir(), `pi-bash-${randomUUID()}.log`);
+		const oldPath = join(tmpdir(), `pi-bash-${randomUUID()}.log`);
+		await writeFile(outputPath, "ERROR current full output");
+		await writeFile(oldPath, "ERROR unrelated old command");
+		cleanupPaths.push(outputPath, oldPath);
+		const inline = `preview\n\n[Showing lines 1-2 of 2. Full output: ${oldPath}]`;
+		const event = bashEvent(inline, { details: { fullOutputPath: outputPath } });
+
+		expect((await reducibleToolResult(event))?.body).toBe("ERROR current full output");
 	});
 
 	it("reads only Pi output files in the system temporary directory", async () => {

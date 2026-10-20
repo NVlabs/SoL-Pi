@@ -13,6 +13,12 @@ const THEN_RUN_SUCCEEDED = "[then_run:succeeded]";
 const THEN_RUN_FAILED = "[then_run:failed]";
 /** Status line pi's bash appends to the inline text of a command that exited non-zero. */
 const EXIT_STATUS_LINE = /(?:^|\n)Command exited with code (-?\d+)\s*$/u;
+/**
+ * Older failing bash calls and fused results can carry only text. Accept Pi's
+ * terminal truncation footer, not a "Full output:" reference inside the log.
+ */
+const FULL_OUTPUT_FOOTER =
+	/\r?\n\r?\n\[Showing (?:lines \d+-\d+ of \d+(?: \(\d+(?:\.\d+)?[KM]?B limit\))?|last \d+(?:\.\d+)?[KM]?B of line \d+ \(line is \d+(?:\.\d+)?[KM]?B\))\. Full output: ([^\r\n]+)\](?:\r?\n\r?\nCommand exited with code -?\d+)?\s*$/u;
 
 export interface ReducibleToolResult {
 	readonly command: string;
@@ -70,8 +76,8 @@ function structuredExitCode(event: ToolResultEvent): number | undefined {
  */
 async function exactBodyFromInline(inline: string, details: unknown): Promise<string> {
 	const detailsPath = detailsFullOutputPath(details);
-	const inlineMatch = inline.match(/Full output:\s*([^\]\r\n]+)/u);
-	const candidate = detailsPath ?? inlineMatch?.[1]?.trim();
+	const footerMatch = inline.match(FULL_OUTPUT_FOOTER);
+	const candidate = detailsPath ?? footerMatch?.[1]?.trim();
 	if (!candidate || !(await safePiBashTempPath(candidate))) return inline;
 	try {
 		return await readFile(candidate, "utf8");
