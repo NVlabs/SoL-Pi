@@ -29,6 +29,8 @@ ObservationPack changes only the messages projected through the public `context`
 
 The reducer handles public `tool_result` events and resolves the configured reducer provider/model through Pi's model registry before calling `ExtensionContext.modelRegistry.complete()` when available. For the Pi 0.81.1 fork, which exposes no registry `complete()` method, it resolves authentication for that reducer model through `getApiKeyAndHeaders()` and calls the shared `@earendil-works/pi-ai/compat` completion API. The reducer preserves the original result whenever the configured reducer model is unavailable or eligibility, model-call, schema, source-hash, exact-quote, size, or likely-secret checks fail.
 
+Reducer archive reuse requires atomic no-follow file access and fails closed when the platform does not expose it. Tests cover this unavailable-capability behavior without depending on error wording; simulating an absent `O_NOFOLLOW` flag does not establish native Windows validation.
+
 All persistent paths use `SessionManager.getSessionDir()` and `getSessionId()`, which are present in both the fork and Pi 0.84.2. SoL-Pi creates no configurable storage-path surface.
 
 The unpublished shared artifact layout is not read or migrated. Each session starts from its own `<sessionDir>/sol-pi/<sessionId>/` directory.
