@@ -55,16 +55,39 @@ function errorName(error: unknown): string | undefined {
 	return isRecord(error) && typeof error.name === "string" ? error.name : undefined;
 }
 
+/**
+ * A call another tool made through `executeTool` (a codemode script, for
+ * example) carries `parentToolCallId` on pi >= 0.99; older pi never sets it.
+ * Such a result never enters the transcript, so reducing it saves nothing, and
+ * replacing its content drops the `structuredContent` the calling script reads.
+ */
+function isNestedToolResult(event: ToolResultEvent): boolean {
+	return (event as { parentToolCallId?: string }).parentToolCallId !== undefined;
+}
+
 export async function reduceToolResult(
 	journal: Journal,
 	config: ReducerConfig,
 	event: ToolResultEvent,
 	context: ExtensionContext,
 ): Promise<ReducedToolResult | undefined> {
+	if (isNestedToolResult(event)) return undefined;
 	const reducible = await reducibleToolResult(event);
 	if (!reducible || !DIAGNOSTIC_COMMAND.test(reducible.command)) return undefined;
 	const { body, command } = reducible;
 	if (Buffer.byteLength(body, "utf8") < config.minBytes) return undefined;
+	// The receipt status follows `isError`. When the result's own text disagrees
+	// (a non-zero exit or a failed then_run reported as success, or the reverse),
+	// leave the original output in place rather than certify the wrong status.
+	if (reducible.exitFailed !== undefined && reducible.exitFailed !== event.isError) {
+		journal("fallback", {
+			toolCallId: event.toolCallId,
+			reason: "exit-state-mismatch",
+			isError: event.isError,
+			exitFailed: reducible.exitFailed,
+		});
+		return undefined;
+	}
 	if (body.length > config.maxChars) {
 		journal("fallback", { reason: "source-over-max-chars", sourceChars: body.length, maxChars: config.maxChars });
 		return undefined;
@@ -180,6 +203,7 @@ export function createEvidencePreservingReducerExtension(options: EvidencePreser
 	return (pi: ExtensionAPI) => {
 		const states = new Map<string, { config: ReducerConfig; journal: Journal }>();
 		pi.on("tool_result", (event, context) => {
+			if (isNestedToolResult(event)) return undefined;
 			let root: string;
 			try {
 				root = runtimeRoot(context);
