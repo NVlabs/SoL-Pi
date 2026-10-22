@@ -70,6 +70,8 @@ Original bytes and the JSONL ledger live under the session-derived SoL-Pi direct
 
 The reducer handles public `tool_result` events and resolves the configured reducer provider/model through Pi's model registry before calling `ExtensionContext.modelRegistry.complete()`, which Pi 0.84.2 and 1.0.x provide. The reducer preserves the original result whenever the configured reducer model is unavailable or eligibility, model-call, schema, source-hash, exact-quote, size, or likely-secret checks fail.
 
+Reducer archive reuse requires atomic no-follow file access and fails closed when the platform does not expose it. Tests cover this unavailable-capability behavior without depending on error wording; simulating an absent `O_NOFOLLOW` flag does not establish native Windows validation.
+
 Candidates are bash results and edit/write results that carry `then_run`. Pi 1.x marks a call that another tool made through `ctx.executeTool()`, such as a codemode script call, with `parentToolCallId`. The reducer ignores such results without archiving, journaling, or calling a model: they never enter the transcript, so reducing them would save no context, and they keep their `structuredContent`. The `codemode` tool's own result is never a candidate.
 
 A receipt's status follows the result's `isError` flag. The reducer also reads the result's own exit signal from the inline text, not from Pi's full-output temporary file, which lacks the status line:
