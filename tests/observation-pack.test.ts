@@ -29,6 +29,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	createObservationPackExtension,
 	FULL_SENDS,
+	PLACEHOLDER_EXCERPT_BYTES,
+	placeholderFor,
 	THRESHOLD_BYTES,
 } from "../src/sol-pi/extensions/observation-pack/index.ts";
 import { componentText, FakePi, FakeSessionManager, fakeContext, fakeToolContext, plainTheme } from "./helpers.ts";
@@ -186,6 +188,59 @@ describe("observation pack", () => {
 		const id = projected[2]?.match(/id: (obs_[a-f0-9]{24})/u)?.[1];
 		expect(id).toBeTruthy();
 		expect(await readFile(observationPath(sessionDir, id!), "utf8")).toBe(body);
+	});
+
+	it("shows byte-bounded excerpts when a large result is one long line", async () => {
+		const sessionDir = await sessionRoot();
+		// One line of JSON with 3-byte and 4-byte (surrogate pair) characters, so
+		// the byte budgets fall inside multi-byte code points.
+		const body = `{"head":"start",${repeatPastThreshold('"k":"a☾🌙",')}"tail":"end"}`;
+		expect(body).not.toContain("\n");
+		const placeholder = (await project(observationPackPi(), toolResult(body), sessionDir, 3))[2]!;
+		const lines = placeholder.split("\n");
+		const budget = PLACEHOLDER_EXCERPT_BYTES / 2;
+
+		const headLabel = lines.indexOf(`[start of first line, up to ${budget} bytes]`);
+		const tailLabel = lines.indexOf(`[middle omitted; end of last line, up to ${budget} bytes]`);
+		expect(headLabel).toBeGreaterThan(-1);
+		expect(tailLabel).toBe(headLabel + 2);
+		const head = lines[headLabel + 1]!;
+		const tail = lines[tailLabel + 1]!;
+
+		expect(head.startsWith('{"head":"start",')).toBe(true);
+		expect(tail.endsWith('"tail":"end"}')).toBe(true);
+		expect(body.startsWith(head)).toBe(true);
+		expect(body.endsWith(tail)).toBe(true);
+		for (const excerpt of [head, tail]) {
+			const bytes = Buffer.byteLength(excerpt, "utf8");
+			expect(bytes).toBeLessThanOrEqual(budget);
+			expect(bytes).toBeGreaterThan(budget - 4);
+			expect(excerpt).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/u);
+			expect(Buffer.from(excerpt, "utf8").toString("utf8")).toBe(excerpt);
+		}
+	});
+
+	it("keeps complete-line excerpts for multi-line results", () => {
+		const text = `head line\n${repeatPastThreshold("middle line\n")}tail line\n`;
+		const placeholder = placeholderFor({
+			id: "obs_000000000000000000000000",
+			contentHash: "",
+			filePath: "",
+			toolName: "bash",
+			text,
+			bytes: Buffer.byteLength(text, "utf8"),
+			lines: text.split("\n").length,
+			tokens: 0,
+		});
+		const lines = placeholder.split("\n");
+		const head = lines.indexOf("[first complete lines, up to 512 bytes]");
+		const tail = lines.indexOf("[middle omitted; last complete lines, up to 512 bytes]");
+		expect(head).toBeGreaterThan(-1);
+		expect(tail).toBeGreaterThan(head);
+		expect(lines[head + 1]).toBe("head line");
+		expect(lines.at(-3)).toBe("tail line");
+		expect(placeholder).not.toContain("start of first line");
+		expect(placeholder).not.toContain("end of last line");
 	});
 
 	it("announces the first measured placeholder saving only in TUI mode", async () => {
