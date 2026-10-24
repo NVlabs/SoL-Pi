@@ -131,6 +131,24 @@ describe("SoL-Pi config", () => {
 		});
 	});
 
+	it("normalizes surrounding whitespace in the EPR reducer route", () => {
+		const { agentDir, cwd } = fixture();
+		const path = join(agentDir, "sol-pi.json");
+		writeFileSync(
+			path,
+			JSON.stringify({
+				version: 1,
+				evidencePreservingReducerProvider: "  test-provider\t",
+				evidencePreservingReducerModel: "\n test-reducer-model  ",
+			}),
+		);
+
+		expect(loadSolPiConfig(cwd, agentDir, true)).toMatchObject({
+			evidencePreservingReducerProvider: "test-provider",
+			evidencePreservingReducerModel: "test-reducer-model",
+		});
+	});
+
 	it.each([
 		["evidencePreservingReducerProvider", ""],
 		["evidencePreservingReducerProvider", 12],

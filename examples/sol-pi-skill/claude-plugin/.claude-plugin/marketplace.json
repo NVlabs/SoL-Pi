@@ -1,0 +1,13 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "sol-pi-local",
+  "description": "Local SoL-Pi plugins",
+  "owner": { "name": "NVlabs SoL-Pi" },
+  "plugins": [
+    {
+      "name": "sol-pi",
+      "description": "/sol-pi: run the current prompt with SoL-Pi, using this Claude Code session as prefix context",
+      "source": "./sol-pi"
+    }
+  ]
+}

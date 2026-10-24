@@ -1,0 +1,23 @@
+{
+  "description": "/sol-pi hand-off without spending host-model turns: start SoL-Pi in the background, block the prompt, wake the session with the result",
+  "hooks": {
+    "UserPromptExpansion": [
+      {
+        "matcher": "sol-pi|sol-pi:sol-pi",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sol-pi-run hook submit",
+            "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "sol-pi-run hook notify",
+            "asyncRewake": true,
+            "timeout": 7500
+          }
+        ]
+      }
+    ]
+  }
+}

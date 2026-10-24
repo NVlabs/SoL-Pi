@@ -28,6 +28,14 @@ describe("Online Context Compact plans", () => {
 		expect(analyzePlanTransition(DONE, DONE).completedSteps).toEqual([]);
 	});
 
+	it("records new completed IDs as history while retaining genuine transitions", () => {
+		const rekeyed = [{ id: "renamed", goal: "build it (restated)", status: "completed" }] as const;
+		expect(analyzePlanTransition([], DONE).completedSteps).toEqual([]);
+		expect(analyzePlanTransition(DONE, rekeyed).completedSteps).toEqual([]);
+		expect(analyzePlanTransition(OPEN, [...DONE, ...rekeyed]).completedSteps).toEqual(DONE);
+		expect(analyzePlanTransition([{ ...OPEN[0], status: "pending" }], DONE).completedSteps).toEqual(DONE);
+	});
+
 	it("flags ambiguous active work and reused ids with changed goals", () => {
 		const transition = analyzePlanTransition(
 			[{ id: "a", goal: "old", status: "in_progress" }],
