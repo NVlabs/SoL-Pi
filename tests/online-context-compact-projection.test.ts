@@ -6,14 +6,19 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { estimateTokens } from "@earendil-works/pi-coding-agent";
+import * as piApi from "@earendil-works/pi-coding-agent";
+import { estimateTokens, sessionEntryToContextMessages, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createObservationPackExtension } from "../src/sol-pi/extensions/observation-pack/index.ts";
 import { createOnlineContextCompactExtension, estimateNativeCompactionTokens } from "../src/sol-pi/extensions/online-context-compact/extension.ts";
 import { decideCompaction, DEFAULT_COMPACTION_ECONOMICS } from "../src/sol-pi/extensions/online-context-compact/economics.ts";
 import { projectedEntryTokens } from "../src/sol-pi/extensions/online-context-compact/projection.ts";
-import { FakePi, FakeSessionManager, fakeContext } from "./helpers.ts";
+import { FakePi, FakeSessionManager, fakeToolContext } from "./helpers.ts";
+
+const buildProjection = (piApi as unknown as {
+	buildSessionProjection?: (entries: SessionEntry[]) => { messages: AgentMessage[] };
+}).buildSessionProjection;
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -39,7 +44,7 @@ describe("ObservationPack and OCC savings", () => {
 		createObservationPackExtension()(pi.asExtensionApi());
 		createOnlineContextCompactExtension({ cacheWriteReadRatio: 12.5 })(pi.asExtensionApi());
 		const abort = vi.fn();
-		const ctx = fakeContext(manager, { abort, getSystemPrompt: () => "s".repeat(4_000) });
+		const ctx = fakeToolContext(manager, { abort, getSystemPrompt: () => "s".repeat(4_000) });
 		await pi.emit("session_start", {}, ctx);
 		let projected: AgentMessage[] = [];
 		for (let index = 0; index < 3; index++) {
@@ -91,5 +96,66 @@ describe("ObservationPack and OCC savings", () => {
 		expect(sizes.has("compact-1")).toBe(false);
 		const ambiguous = projectedEntryTokens(manager.getBranch(), [...projected, tool]);
 		expect(ambiguous.has(keptId)).toBe(false);
+	});
+
+	it.skipIf(!buildProjection)("uses edited message sizes when deciding whether Pi has any removable prefix", () => {
+		const manager = new FakeSessionManager();
+		manager.appendMessage({ role: "user", content: "old question " + "x".repeat(6_000), timestamp: 1 });
+		manager.appendMessage(fauxAssistantMessage("old response " + "y".repeat(6_000)));
+		manager.appendMessage({ role: "user", content: "continue", timestamp: 2 });
+		manager.appendMessage(fauxAssistantMessage("z".repeat(80_000)));
+		const targetId = manager.getLeafId();
+		manager.entries.push({ type: "context_edit", id: "edit-small", parentId: targetId,
+			timestamp: new Date(3).toISOString(), targetId, replacement: { content: "small edited response" } } as unknown as SessionEntry);
+		manager.leafId = "edit-small";
+		const entries = manager.getBranch();
+		const projected = buildProjection!(entries).messages;
+		expect(projected.reduce((sum, message) => sum + estimateTokens(message), 0)).toBeLessThan(20_000);
+		expect(estimateNativeCompactionTokens(entries, 20_000)).toBe(0);
+		expect(estimateNativeCompactionTokens(entries, 20_000, projected)).toBe(0);
+	});
+
+	it.skipIf(!buildProjection)("maps edited custom messages to their source before pricing extension projections", () => {
+		const manager = new FakeSessionManager();
+		manager.entries.push({ type: "custom_message", id: "custom", parentId: null,
+			timestamp: new Date(1).toISOString(), customType: "note", content: "x".repeat(40_000), display: false });
+		manager.leafId = "custom";
+		manager.entries.push({ type: "context_edit", id: "edit-custom", parentId: "custom",
+			timestamp: new Date(2).toISOString(), targetId: "custom", replacement: { content: "preserved compact note" } } as unknown as SessionEntry);
+		manager.leafId = "edit-custom";
+		manager.appendMessage({ role: "user", content: "new question", timestamp: 3 });
+		manager.appendMessage(fauxAssistantMessage("y".repeat(80_000)));
+		const entries = manager.getBranch();
+		const projected = buildProjection!(entries).messages;
+		expect(projectedEntryTokens(entries, projected).get("custom")).toBe(estimateTokens(projected[0]!));
+		expect(estimateNativeCompactionTokens(entries, 20_000, projected)).toBe(
+			estimateTokens(projected[0]!) + estimateTokens(projected[1]!),
+		);
+	});
+
+	it("never counts a preserved system checkpoint as removable summary tokens", () => {
+		const manager = new FakeSessionManager();
+		manager.appendMessage({ role: "user", content: "earlier question", timestamp: 1 });
+		manager.appendMessage(fauxAssistantMessage("kept answer"));
+		const keptId = manager.getLeafId()!;
+		manager.entries.push({ type: "compaction", id: "checkpoint", parentId: keptId,
+			timestamp: new Date(2).toISOString(), summary: "memo", firstKeptEntryId: keptId, tokensBefore: 100,
+			systemMessage: { role: "system", content: "s".repeat(80_000), timestamp: 0 },
+		} as SessionEntry);
+		manager.leafId = "checkpoint";
+		manager.appendMessage({ role: "user", content: "new question", timestamp: 3 });
+		manager.appendMessage(fauxAssistantMessage("x".repeat(80_000)));
+		const entries = manager.getBranch();
+		const checkpoint = entries.find((entry) => entry.id === "checkpoint")!;
+		const projected = buildProjection ? buildProjection(entries).messages : [
+			...sessionEntryToContextMessages(checkpoint), ...entries.slice(1, 2).flatMap(sessionEntryToContextMessages),
+			...entries.slice(3).flatMap(sessionEntryToContextMessages),
+		];
+		const expected = estimateTokens(projected.find((message) => message.role === "compactionSummary")!) +
+			estimateTokens(entries[1]!.type === "message" ? entries[1]!.message : projected[0]!) +
+			estimateTokens(entries[3]!.type === "message" ? entries[3]!.message : projected[0]!);
+		expect(projectedEntryTokens(entries, projected).get("checkpoint")).toBe(1);
+		expect(estimateNativeCompactionTokens(entries, 20_000)).toBe(expected);
+		expect(estimateNativeCompactionTokens(entries, 20_000, projected)).toBe(expected);
 	});
 });

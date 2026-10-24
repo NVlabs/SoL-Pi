@@ -6,9 +6,9 @@
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative } from "node:path";
+import { basename, isAbsolute, join, relative } from "node:path";
 import type { AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
-import { SessionManager, type ExtensionContext, type ToolResultEvent } from "@earendil-works/pi-coding-agent";
+import { createBashToolDefinition, SessionManager, type ExtensionContext, type ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	createEvidencePreservingReducerExtension,
@@ -17,12 +17,13 @@ import {
 	REDUCER_RECEIPT_SCHEMA,
 } from "../src/sol-pi/extensions/evidence-preserving-reducer/index.ts";
 import { archiveBody } from "../src/sol-pi/extensions/evidence-preserving-reducer/archive.ts";
+import { detailsFullOutputPath } from "../src/sol-pi/extensions/evidence-preserving-reducer/candidate.ts";
 import {
 	callReducer,
 	type CompatComplete,
 } from "../src/sol-pi/extensions/evidence-preserving-reducer/provider.ts";
 import { runtimeRoot } from "../src/sol-pi/runtime-paths.ts";
-import { FakePi, FakeSessionManager, fakeContext } from "./helpers.ts";
+import { FakePi, FakeSessionManager, fakeContext, fakeToolContext } from "./helpers.ts";
 
 const cleanupPaths: string[] = [];
 
@@ -113,6 +114,59 @@ function fusedEvent(body: string, failed: boolean): ToolResultEvent {
 		details: { patch: "test patch" },
 		isError: failed,
 	} as ToolResultEvent;
+}
+
+function failureReceipt(signal: string): (input: string) => ModelReceipt {
+	return (input) => ({
+		schema: REDUCER_RECEIPT_SCHEMA,
+		source_sha256: sourceHash(input),
+		status: "failure",
+		uncertain: false,
+		evidence: [{ kind: "failure", quote: signal }],
+	});
+}
+
+/**
+ * Run a command through Pi's own bash tool and shape the `tool_result` event
+ * Pi would emit for it. A non-zero exit throws on Pi < 0.99 (the error text
+ * becomes the content) and returns `isError: true` with `structuredContent`
+ * since then. Pi never deletes the `pi-bash-*.log` it writes for a large
+ * output, so its path is queued for cleanup.
+ */
+async function realBashEvent(command: string, root: string): Promise<ToolResultEvent> {
+	const event = await runRealBash(command, root);
+	const text = event.content.flatMap((item) => (item.type === "text" ? [item.text] : [])).join("\n");
+	const fullOutputPath = detailsFullOutputPath(event.details) ?? text.match(/Full output:\s*([^\]\r\n]+)/u)?.[1]?.trim();
+	if (fullOutputPath) cleanupPaths.push(fullOutputPath);
+	return event;
+}
+
+async function runRealBash(command: string, root: string): Promise<ToolResultEvent> {
+	const base = { type: "tool_result", toolName: "bash", toolCallId: "real-bash", input: { command } };
+	const ctx = fakeToolContext(new FakeSessionManager([], "real-bash", root), { cwd: root });
+	try {
+		const result = (await createBashToolDefinition(root).execute(
+			"real-bash",
+			{ command },
+			undefined,
+			undefined,
+			ctx,
+		)) as { content: ToolResultEvent["content"]; details: unknown; structuredContent?: unknown; isError?: boolean };
+		return {
+			...base,
+			content: result.content,
+			details: result.details,
+			...(result.structuredContent === undefined ? {} : { structuredContent: result.structuredContent }),
+			isError: result.isError === true,
+		} as ToolResultEvent;
+	} catch (error) {
+		return {
+			...base,
+			content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
+			details: {},
+			isError: true,
+		} as ToolResultEvent;
+	}
 }
 
 function contextInput(context: Context): string {
@@ -317,7 +371,8 @@ describe("evidence-preserving reducer", () => {
 		const localSourcePath = relative(join(runtimeRoot(context), "evidence-preserving-reducer"), sourcePath);
 		expect(localSourcePath.length > 0 && !localSourcePath.startsWith("..") && !isAbsolute(localSourcePath)).toBe(true);
 		expect(await readFile(sourcePath, "utf8")).toBe(body);
-		expect((await stat(sourcePath)).mode & 0o777).toBe(0o600);
+		// Windows filesystems do not map POSIX permission bits onto stat().mode.
+		if (process.platform !== "win32") expect((await stat(sourcePath)).mode & 0o777).toBe(0o600);
 		expect(events.filter((entry) => entry.kind === "applied")).toHaveLength(1);
 		expect(notify).toHaveBeenCalledTimes(1);
 		expect(notify.mock.calls[0]?.[0]).toMatch(
@@ -410,6 +465,173 @@ describe("evidence-preserving reducer", () => {
 			expect(await readFile(String(candidate?.sourcePath), "utf8")).toBe(body);
 		},
 	);
+
+	it("leaves a nested tool call untouched without archiving, journaling, or calling the model", async () => {
+		const root = await storeRoot();
+		let calls = 0;
+		const { context, manager, pi } = load(root, async () => {
+			calls++;
+			throw new Error("unexpected model call");
+		});
+		const body = `ERROR nested failure\n${"diagnostic output\n".repeat(400)}`;
+		const structuredContent = { output: body, truncated: false, exit_code: 2, wall_time_seconds: 0.1 };
+
+		const bash = bashEvent(body, {
+			toolCallId: "codemode-1/1",
+			parentToolCallId: "codemode-1",
+			structuredContent,
+		} as Partial<ToolResultEvent>);
+		const fused = { ...fusedEvent(body, true), toolCallId: "codemode-1/2", parentToolCallId: "codemode-1" };
+
+		expect(await pi.emit("tool_result", bash, context)).toBeUndefined();
+		expect(await pi.emit("tool_result", fused, context)).toBeUndefined();
+		expect(calls).toBe(0);
+		expect(manager.customEntryData()).toEqual([]);
+	});
+
+	it("never treats the codemode tool's own result as a candidate", async () => {
+		const root = await storeRoot();
+		let calls = 0;
+		const { context, manager, pi } = load(root, async () => {
+			calls++;
+			throw new Error("unexpected model call");
+		});
+		const body = `ERROR script failure\n${"diagnostic output\n".repeat(400)}`;
+		const event = bashEvent(body, {
+			toolName: "codemode",
+			toolCallId: "codemode-1",
+			input: { code: "return await tools.bash({ command: 'pytest -q' });", command: "pytest -q" },
+		} as Partial<ToolResultEvent>);
+
+		expect(await pi.emit("tool_result", event, context)).toBeUndefined();
+		expect(await pi.emit("tool_result", { ...event, isError: false }, context)).toBeUndefined();
+		expect(calls).toBe(0);
+		expect(manager.customEntryData()).toEqual([]);
+	});
+
+	it.each([
+		{
+			name: "a fused then_run that exited non-zero reported as succeeded",
+			event: (body: string) => ({
+				...fusedEvent(body, false),
+				content: [
+					{ type: "text", text: "Successfully wrote 12 bytes to target.ts" },
+					{ type: "text", text: `[then_run:succeeded]\n${body}\n\nCommand exited with code 7` },
+				],
+			}),
+		},
+		{
+			name: "a fused [then_run:failed] result without isError",
+			event: (body: string) => ({ ...fusedEvent(body, true), isError: false }),
+		},
+		{
+			name: "a fused [then_run:succeeded] result with isError",
+			event: (body: string) => ({ ...fusedEvent(body, false), isError: true }),
+		},
+		{
+			name: "a bash result whose structured exit code is non-zero without isError",
+			event: (body: string) =>
+				bashEvent(body, {
+					isError: false,
+					structuredContent: { output: body, truncated: false, exit_code: 2, wall_time_seconds: 0.1 },
+				} as Partial<ToolResultEvent>),
+		},
+		{
+			name: "a bash result whose inline status line is non-zero without isError",
+			event: (body: string) => bashEvent(`${body}\n\nCommand exited with code 2`, { isError: false }),
+		},
+	])("skips $name and journals exit-state-mismatch", async ({ event }) => {
+		const root = await storeRoot();
+		let calls = 0;
+		const { context, manager, pi } = load(root, async () => {
+			calls++;
+			throw new Error("unexpected model call");
+		});
+		const body = `ERROR test target failed\n${"diagnostic output\n".repeat(400)}`;
+
+		expect(await pi.emit("tool_result", event(body) as ToolResultEvent, context)).toBeUndefined();
+		expect(calls).toBe(0);
+		const entries = manager.customEntryData();
+		expect(entries).toEqual([expect.objectContaining({ kind: "fallback", reason: "exit-state-mismatch" })]);
+	});
+
+	it("checks the exit status on the inline text before reading the full-output file", async () => {
+		const root = await storeRoot();
+		const fullBody = `ERROR full output\n${"full diagnostic\n".repeat(400)}`;
+		const outputPath = join(tmpdir(), `pi-bash-${randomUUID()}.log`);
+		await writeFile(outputPath, fullBody, { mode: 0o600 });
+		cleanupPaths.push(outputPath);
+		let calls = 0;
+		const { context, manager, pi } = load(root, async () => {
+			calls++;
+			throw new Error("unexpected model call");
+		});
+		const inline = `full diagnostic\n\n[Showing lines 2-401 of 401. Full output: ${outputPath}]\n\nCommand exited with code 7`;
+		const event = {
+			...fusedEvent("", false),
+			content: [
+				{ type: "text", text: "Successfully wrote 12 bytes to target.ts" },
+				{ type: "text", text: `[then_run:succeeded]\n${inline}` },
+			],
+			details: { fullOutputPath: outputPath },
+		} as ToolResultEvent;
+
+		expect(await pi.emit("tool_result", event, context)).toBeUndefined();
+		expect(calls).toBe(0);
+		expect(manager.customEntryData()).toContainEqual(
+			expect.objectContaining({ kind: "fallback", reason: "exit-state-mismatch" }),
+		);
+	});
+
+	it("trusts the structured exit code over output that only looks like a status line", async () => {
+		const root = await storeRoot();
+		const signal = "PASS all targets";
+		const body = `${signal}\n${"diagnostic output\n".repeat(400)}Command exited with code 3`;
+		const { context, pi } = load(
+			root,
+			modelComplete(body, (input) => ({
+				schema: REDUCER_RECEIPT_SCHEMA,
+				source_sha256: sourceHash(input),
+				status: "success",
+				uncertain: false,
+				evidence: [{ kind: "summary", quote: signal }],
+			})),
+		);
+		const event = bashEvent(body, {
+			isError: false,
+			structuredContent: { output: body, truncated: false, exit_code: 0, wall_time_seconds: 0.1 },
+		} as Partial<ToolResultEvent>);
+
+		const result = (await pi.emit("tool_result", event, context)) as { content: { text: string }[] } | undefined;
+		expect(result?.content[0]?.text).toMatch(/status=success/u);
+	});
+
+	it.each([
+		{ name: "inline", lines: 1_500 },
+		{ name: "truncated", lines: 5_000 },
+	])("reduces Pi's real failing bash result ($name) to a failure receipt", async ({ name, lines }) => {
+		const root = await storeRoot();
+		const signal = "ERROR real bash target failed";
+		const event = await realBashEvent(`printf '%s\\n' '${signal}'; seq 1 ${lines}; exit 2 # make`, root);
+		expect(event.isError).toBe(true);
+		// The truncated run leaves Pi's full-output file behind; it must be queued for cleanup.
+		expect(cleanupPaths.some((path) => basename(path).startsWith("pi-bash-"))).toBe(name === "truncated");
+		const { context, manager, pi } = load(root, modelComplete("", failureReceipt(signal)));
+
+		const result = (await pi.emit("tool_result", event, context)) as {
+			content: { text: string }[];
+			isError: boolean;
+		};
+
+		const receipt = result.content[0]?.text ?? "";
+		expect(receipt).toMatch(/status=failure/u);
+		expect(receipt).toContain(JSON.stringify(signal));
+		expect(result.isError).toBe(true);
+		const candidate = manager.customEntryData().find((entry) => entry.kind === "candidate");
+		const archived = await readFile(String(candidate?.sourcePath), "utf8");
+		expect(archived.startsWith(`${signal}\n1\n`)).toBe(true);
+		expect(archived).toContain(`\n${lines}\n`);
+	});
 
 	it.each(["invented", "model-error"] as const)("fails open on %s", async (mode) => {
 		const root = await storeRoot();

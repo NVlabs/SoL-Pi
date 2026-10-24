@@ -45,8 +45,17 @@ const planStepSchema = Type.Object(
 	{ additionalProperties: false },
 );
 
+/**
+ * Pi 1.0 tool exposure: keep update_plan declared to the model, including in codemode `only` mode,
+ * and never callable from codemode scripts. A script call gets a nested `<parent>/<n>` id that no
+ * turn reports as a tool result, so its plan boundary could never compact. Pi 0.84.2 has no
+ * exposure field and ignores it; spreading a constant keeps its tool type free of the property.
+ */
+const MODEL_ONLY_EXPOSURE = { exposure: "model-only" } as const;
+
 export function registerOnlineTools(pi: ExtensionAPI, handlers: OnlineToolHandlers): void {
 	pi.registerTool({
+		...MODEL_ONLY_EXPOSURE,
 		name: "update_plan",
 		label: "Update plan",
 		description:

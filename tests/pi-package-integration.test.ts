@@ -5,7 +5,7 @@
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
@@ -19,8 +19,14 @@ import {
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { expect, it } from "vitest";
 import { DEFAULT_CONFIG } from "../src/sol-pi/config.ts";
+import { piCliPath } from "./helpers.ts";
 
-it.each(["persistent", "in-memory"])("loads the package and executes fused tools in an all-enabled %s Pi session", async (storage) => {
+it.each([
+	{ storage: "persistent", exitCode: 0 },
+	{ storage: "in-memory", exitCode: 0 },
+	{ storage: "persistent", exitCode: 7 },
+	{ storage: "in-memory", exitCode: 7 },
+])("loads fused tools in an all-enabled $storage Pi session (exit $exitCode)", async ({ storage, exitCode }) => {
 	const cwd = await mkdtemp(join(tmpdir(), "sol-pi-package-"));
 	const agentDir = join(cwd, "agent");
 	let session: AgentSession | undefined;
@@ -40,7 +46,7 @@ it.each(["persistent", "in-memory"])("loads the package and executes fused tools
 			fauxAssistantMessage(fauxToolCall("write", {
 				path: "result.txt",
 				content: "package integration passed\n",
-				then_run: { command: "cat result.txt" },
+				then_run: { command: `cat result.txt; exit ${exitCode}` },
 			}), { stopReason: "toolUse" }),
 			fauxAssistantMessage(fauxToolCall("update_plan", {
 				steps: [{ id: "verify", goal: "verify the package", status: "in_progress" }],
@@ -82,7 +88,9 @@ it.each(["persistent", "in-memory"])("loads the package and executes fused tools
 		const errors: unknown[] = [];
 		await session.bindExtensions({ onError: (error) => errors.push(error) });
 		expect(session.getActiveToolNames()).toEqual(expect.arrayContaining(["edit", "write", "obs_recall", "update_plan"]));
-		const solPi = resourceLoader.getExtensions().extensions.find((extension) => extension.path.endsWith("src/sol-pi/index.ts"));
+		const solPi = resourceLoader.getExtensions().extensions.find((extension) =>
+			extension.path.split("\\").join("/").endsWith("src/sol-pi/index.ts")
+		);
 		expect(solPi?.handlers.has("tool_result")).toBe(true);
 		expect(solPi?.handlers.has("context")).toBe(true);
 		expect(solPi?.handlers.has("agent_settled")).toBe(true);
@@ -92,10 +100,12 @@ it.each(["persistent", "in-memory"])("loads the package and executes fused tools
 			entry.type === "message" && entry.message.role === "toolResult" ? [entry.message] : [],
 		);
 		expect(toolResults).toHaveLength(2);
-		expect(toolResults.every((result) => !result.isError)).toBe(true);
+		expect(toolResults.find((result) => result.toolName === "update_plan")?.isError).toBe(false);
 		const writeResult = toolResults.find((result) => result.toolName === "write");
+		expect(writeResult?.isError).toBe(exitCode !== 0);
 		const observation = writeResult?.content.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n");
-		expect(observation).toContain("[then_run:succeeded]");
+		expect(observation).toContain(exitCode === 0 ? "[then_run:succeeded]" : "[then_run:failed]");
+		if (exitCode !== 0) expect(observation).not.toContain("[then_run:succeeded]");
 		expect(observation).toContain("package integration passed");
 		expect(await readFile(join(cwd, "result.txt"), "utf8")).toBe("package integration passed\n");
 		expect(session.getLastAssistantText()).toBe("package smoke complete");
@@ -108,6 +118,41 @@ it.each(["persistent", "in-memory"])("loads the package and executes fused tools
 			const roots = (await readdir(tmpdir())).filter((name) => name.startsWith(`sol-pi-${ephemeralSessionId}-`));
 			await Promise.all(roots.map((name) => rm(join(tmpdir(), name), { recursive: true, force: true })));
 		}
+		await rm(cwd, { recursive: true, force: true });
+	}
+}, 30_000);
+
+it.each([false, true])("starts and shuts down the offline RPC CLI without a prompt (all enabled: %s)", async (allEnabled) => {
+	const cwd = await mkdtemp(join(tmpdir(), "sol-pi-rpc-startup-"));
+	try {
+		const agentDir = join(cwd, "agent");
+		await mkdir(agentDir);
+		await mkdir(join(cwd, CONFIG_DIR_NAME));
+		await writeFile(join(cwd, CONFIG_DIR_NAME, "sol-pi.json"), JSON.stringify({
+			...DEFAULT_CONFIG,
+			actionFusion: true,
+			observationPack: true,
+			evidencePreservingReducer: allEnabled,
+			onlineContextCompact: allEnabled,
+		}));
+		const running = promisify(execFile)(process.execPath, [
+			piCliPath(), "--offline", "--approve", "--no-session", "--mode", "rpc",
+			"--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files",
+			"-e", join(process.cwd(), "src/sol-pi/index.ts"),
+		], {
+			cwd,
+			env: { ...process.env, PI_CODING_AGENT_DIR: agentDir },
+			timeout: 20_000,
+		});
+		running.child.stdin?.end(`${JSON.stringify({ id: "startup", type: "get_state" })}\n`);
+		const { stdout, stderr } = await running;
+		const records = stdout.trim().split("\n").map((line) => JSON.parse(line));
+		expect(records.find((record) => record.id === "startup")).toMatchObject({
+			type: "response", command: "get_state", success: true,
+		});
+		expect(stderr).not.toMatch(/error|failed/iu);
+		expect(records.some((record) => record.type === "agent_start")).toBe(false);
+	} finally {
 		await rm(cwd, { recursive: true, force: true });
 	}
 }, 30_000);
@@ -150,9 +195,8 @@ export default function (pi) {
 	});
 }
 `);
-		const piDist = dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent")));
 		const running = promisify(execFile)(process.execPath, [
-			join(piDist, "bundle/cli.js"), "--offline", "--approve", "--no-session",
+			piCliPath(), "--offline", "--approve", "--no-session",
 			"--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes",
 			"-e", join(process.cwd(), "src/sol-pi/index.ts"), "-e", providerPath,
 			"--provider", "sol-pi-no-session-test", "--model", "ephemeral",

@@ -6,9 +6,10 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
 import { homedir } from "node:os";
+import { fakeToolContext, type ToolExecuteContext } from "./helpers.ts";
 import { normalizeWindowsShellPath, resolveToolPath } from "../src/sol-pi/extensions/action-fusion/file-queue.ts";
 import { createActionFusionExtension, type ActionFusionOptions } from "../src/sol-pi/extensions/action-fusion/index.ts";
 
@@ -42,15 +43,8 @@ function withPlatform(platform: NodeJS.Platform, run: () => void): void {
 	}
 }
 
-function context(cwd: string): ExtensionContext {
-	return {
-		cwd,
-		mode: "json",
-		hasUI: false,
-		model: undefined,
-		sessionManager: { getSessionId: () => "action-fusion-paths", getSessionFile: () => undefined },
-		ui: {},
-	} as ExtensionContext;
+function context(cwd: string): ToolExecuteContext {
+	return fakeToolContext(cwd, { cwd });
 }
 
 describe("Action Fusion file URL paths", () => {

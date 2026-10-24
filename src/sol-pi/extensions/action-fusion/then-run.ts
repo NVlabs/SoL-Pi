@@ -5,13 +5,25 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { type BashToolOptions, createBashToolDefinition, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { type BashToolOptions, createBashToolDefinition, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { withFusedFileQueue } from "./file-queue.ts";
 
 export const THEN_RUN_SUCCEEDED = "[then_run:succeeded]";
 export const THEN_RUN_FAILED = "[then_run:failed]";
 export const THEN_RUN_SKIPPED = "[then_run:skipped]";
+
+/**
+ * The context Pi passes to tool `execute()`: `ExtensionContext` before Pi 0.99,
+ * `ExtensionToolContext` since then. Derived so it compiles against both.
+ */
+type ToolExecuteContext = Parameters<ToolDefinition["execute"]>[4];
+
+/**
+ * What happened to the follow-up command of a returned fused result. Thrown
+ * results carry the status in their message instead.
+ */
+export type ThenRunStatus = "none" | "succeeded" | "failed" | "skipped";
 
 export interface ThenRunInput {
 	command: string;
@@ -41,10 +53,10 @@ function resultText(result: AgentToolResult<unknown>): string {
 		.join("\n");
 }
 
+const THEN_RUN_SKIPPED_REASON = "The file mutation did not complete successfully; the command was not run.";
+
 function thenRunSkippedError(error: unknown): Error {
-	return new Error(
-		`${errorText(error)}\n\n${THEN_RUN_SKIPPED} The file mutation did not complete successfully; the command was not run.`,
-	);
+	return new Error(`${errorText(error)}\n\n${THEN_RUN_SKIPPED} ${THEN_RUN_SKIPPED_REASON}`);
 }
 
 async function fileSha256(path: string): Promise<string> {
@@ -75,7 +87,35 @@ export async function assertUnchangedBeforeCommand(
  * fused mutation of the same file cannot interleave. Pi's built-in mutation
  * tool keeps its own queue; the two queues are not nested.
  */
-export async function executeMutationThenRun<TDetails>({
+export async function executeMutationThenRun<TDetails>(
+	options: FusedMutationOptions<TDetails>,
+): Promise<AgentToolResult<TDetails>> {
+	return (await runFusedMutation(options)).result;
+}
+
+interface FusedMutationOptions<TDetails> {
+	toolCallId: string;
+	absolutePath: string;
+	thenRun: ThenRunInput | undefined;
+	mutate: () => Promise<AgentToolResult<TDetails>>;
+	bashOptions: BashToolOptions | undefined;
+	signal: AbortSignal | undefined;
+	ctx: ToolExecuteContext;
+}
+
+/**
+ * {@link executeMutationThenRun} plus the status of the follow-up command, so
+ * callers never have to infer success from text the command itself printed.
+ *
+ * A failing command is reported in one of two shapes, depending on Pi's bash:
+ * before Pi 0.99 it throws on a non-zero exit, and so do later versions on a
+ * timeout, an abort, or a missing exit code. Those failures throw an error
+ * that keeps the mutation output. Since Pi 0.99 a non-zero exit comes back as
+ * an `isError` result; it is returned as an `isError` result that keeps the
+ * mutation's details, so the edit diff still renders. Both carry
+ * `[then_run:failed]` followed by the command output.
+ */
+export async function runFusedMutation<TDetails>({
 	toolCallId,
 	absolutePath,
 	thenRun,
@@ -83,15 +123,7 @@ export async function executeMutationThenRun<TDetails>({
 	bashOptions,
 	signal,
 	ctx,
-}: {
-	toolCallId: string;
-	absolutePath: string;
-	thenRun: ThenRunInput | undefined;
-	mutate: () => Promise<AgentToolResult<TDetails>>;
-	bashOptions: BashToolOptions | undefined;
-	signal: AbortSignal | undefined;
-	ctx: ExtensionContext;
-}): Promise<AgentToolResult<TDetails>> {
+}: FusedMutationOptions<TDetails>): Promise<{ result: AgentToolResult<TDetails>; status: ThenRunStatus }> {
 	return withFusedFileQueue(absolutePath, async () => {
 		let mutationResult: AgentToolResult<TDetails>;
 		try {
@@ -104,24 +136,63 @@ export async function executeMutationThenRun<TDetails>({
 		}
 
 		if (thenRun === undefined) {
-			return mutationResult;
+			return { result: mutationResult, status: "none" };
+		}
+		if (isErrorResult(mutationResult)) {
+			return {
+				result: appendThenRunText(mutationResult, `${THEN_RUN_SKIPPED} ${THEN_RUN_SKIPPED_REASON}`, true),
+				status: "skipped",
+			};
 		}
 
 		await assertUnchangedBeforeCommand(absolutePath);
 		const bash = createBashToolDefinition(ctx.cwd, bashOptions);
+		let bashResult: AgentToolResult<unknown>;
 		try {
-			const bashResult = await bash.execute(`${toolCallId}:then_run`, thenRun, signal, undefined, ctx);
-			const output = resultText(bashResult);
-			return {
-				...mutationResult,
-				content: [
-					...mutationResult.content,
-					{ type: "text", text: output ? `${THEN_RUN_SUCCEEDED}\n${output}` : THEN_RUN_SUCCEEDED },
-				],
-			};
+			bashResult = await bash.execute(`${toolCallId}:then_run`, thenRun, signal, undefined, ctx);
 		} catch (error) {
 			const mutationOutput = resultText(mutationResult);
 			throw new Error([mutationOutput, THEN_RUN_FAILED, errorText(error)].filter(Boolean).join("\n\n"));
 		}
+		const output = resultText(bashResult);
+		if (isErrorResult(bashResult)) {
+			return {
+				result: appendThenRunText(mutationResult, output ? `${THEN_RUN_FAILED}\n${output}` : THEN_RUN_FAILED, true),
+				status: "failed",
+			};
+		}
+		return {
+			result: appendThenRunText(
+				mutationResult,
+				output ? `${THEN_RUN_SUCCEEDED}\n${output}` : THEN_RUN_SUCCEEDED,
+				false,
+			),
+			status: "succeeded",
+		};
 	});
+}
+
+/** Pi 0.99+ results may report a failure with `isError` instead of throwing; 0.84 has no such field. */
+type MaybeErrorResult<TDetails> = AgentToolResult<TDetails> & { isError?: boolean };
+
+function isErrorResult(result: AgentToolResult<unknown>): boolean {
+	return (result as MaybeErrorResult<unknown>).isError === true;
+}
+
+/**
+ * Add the follow-up report to the mutation result. Only the mutation's own
+ * fields are kept: bash `details` and `structuredContent` describe a different
+ * tool and would confuse the edit and write renderers.
+ */
+function appendThenRunText<TDetails>(
+	mutationResult: AgentToolResult<TDetails>,
+	text: string,
+	isError: boolean,
+): AgentToolResult<TDetails> {
+	const result: MaybeErrorResult<TDetails> = {
+		...mutationResult,
+		content: [...mutationResult.content, { type: "text", text }],
+	};
+	if (isError) result.isError = true;
+	return result;
 }

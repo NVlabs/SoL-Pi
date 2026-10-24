@@ -5,8 +5,6 @@
 import type { AgentMessage, AgentToolResult } from "@earendil-works/pi-agent-core";
 import {
 	estimateTokens,
-	findCutPoint,
-	sessionEntryToContextMessages,
 	type ExtensionContext,
 	type ExtensionFactory,
 	type SessionEntry,
@@ -18,7 +16,7 @@ import {
 	type CompactionDecision,
 } from "./economics.ts";
 import { analyzePlanTransition, formatPlanSnapshot, parsePlanSteps } from "./plan.ts";
-import { projectedEntryTokens } from "./projection.ts";
+import { estimateProjectedCompactionTokens } from "./projection.ts";
 import {
 	appendOnlineState,
 	initialOnlineState,
@@ -50,6 +48,9 @@ const RECOVERABLE_COMPACTION_ERRORS = new Set([
 	"Already compacted",
 	"Summarization failed: generation hit the token cap and the summary is incomplete",
 ]);
+export const COMPACTION_FAILED_RESUME_REMINDER =
+	"Online context compaction did not complete. The parent task is still active. " +
+	"Continue the remaining work from the current plan.";
 
 export type OnlineContextCompactOptions = {
 	readonly cacheWriteReadRatio?: number | null;
@@ -60,6 +61,8 @@ type PendingBoundary = { readonly toolCallId: string };
 type SelectedCompaction = { readonly decision: CompactionDecision };
 type CacheDebt = { readonly debtTokens: number; readonly repaymentTokens: number };
 type PendingContinuation = { readonly promise: Promise<void>; readonly resolve: () => void };
+type CompactionTokenSettings = { readonly keepRecentTokens: number; readonly reserveTokens: number };
+type SettingsSource = { readonly getSettings?: () => unknown };
 
 export function resolveKeepRecentTokens(value: number | undefined): number {
 	const resolved = value ?? DEFAULT_KEEP_RECENT_TOKENS;
@@ -98,92 +101,57 @@ function progressSummary(input: PlanUpdateInput, completedStepId: string): Progr
 	};
 }
 
-function compactionTokenEstimate(
-	entries: readonly SessionEntry[],
-	startIndex: number,
-	endIndex: number,
-	projected?: ReadonlyMap<string, number>,
-): number {
-	let tokens = 0;
-	for (let index = startIndex; index < endIndex; index++) {
-		const entry = entries[index];
-		if (!entry || entry.type === "compaction") continue;
-		if (projected) {
-			tokens += projected.get(entry.id) ?? 0;
-			continue;
-		}
-		const message = sessionEntryToContextMessages(entry)[0];
-		if (message) tokens += estimateTokens(message);
-	}
-	return tokens;
-}
-
-function branchAfterAbort(entries: readonly SessionEntry[]): SessionEntry[] {
-	const last = entries.at(-1);
-	const markerProvider = ["sol", "pi"].join("-");
-	return [
-		...entries,
-		{
-			type: "message",
-			id: "sol-pi-online-context-compact-abort-marker",
-			parentId: last?.id ?? null,
-			timestamp: new Date(0).toISOString(),
-			message: {
-				role: "assistant",
-				content: [],
-				api: markerProvider,
-				provider: markerProvider,
-				model: "aborted",
-				usage: {
-					input: 0,
-					output: 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-					totalTokens: 0,
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-				},
-				stopReason: "aborted",
-				timestamp: 0,
-			},
-		} as SessionEntry,
-	];
-}
-
 export function estimateNativeCompactionTokens(
 	entries: readonly SessionEntry[],
 	keepRecentTokens: number,
 	projectedMessages?: readonly AgentMessage[],
 ): number {
-	const path = branchAfterAbort(entries);
-	const projected = projectedMessages === undefined ? undefined : projectedEntryTokens(entries, projectedMessages);
-	let startIndex = 0;
-	let previousSummaryTokens = 0;
-	for (let index = path.length - 1; index >= 0; index--) {
-		const entry = path[index];
-		if (entry?.type !== "compaction") continue;
-		const keptIndex = path.findIndex((item) => item.id === entry.firstKeptEntryId);
-		startIndex = keptIndex >= 0 ? keptIndex : index + 1;
-		const previousSummary = sessionEntryToContextMessages(entry)[0];
-		previousSummaryTokens = projected
-			? projected.get(entry.id) ?? 0
-			: previousSummary ? estimateTokens(previousSummary) : 0;
-		break;
-	}
-
-	// Keep Pi's native cut on session entries; price only the corresponding
-	// messages that the provider actually saw after context projection.
-	const cut = findCutPoint(path, startIndex, path.length, keepRecentTokens);
-	const firstKept = cut.firstKeptEntryIndex;
-	if (compactionTokenEstimate(path, startIndex, firstKept) === 0) return 0;
-	return previousSummaryTokens + compactionTokenEstimate(path, startIndex, firstKept, projected);
+	return estimateProjectedCompactionTokens(entries, keepRecentTokens, projectedMessages);
 }
 
 function validPositiveInteger(value: unknown): value is number {
 	return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
+function tokenSetting(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function record(value: unknown): Readonly<Record<string, unknown>> | undefined {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+		? (value as Readonly<Record<string, unknown>>)
+		: undefined;
+}
+
+/**
+ * Pi's effective compaction token settings for `model`, resolved the way Pi resolves them:
+ * `compaction.modelOverrides["<provider>/<id>"]`, then `compaction`, then Pi's defaults.
+ */
+export function resolveCompactionTokenSettings(
+	settings: unknown,
+	model: { readonly provider: string; readonly id: string } | undefined,
+): CompactionTokenSettings {
+	const compaction = record(record(settings)?.compaction);
+	const override = model ? record(record(compaction?.modelOverrides)?.[`${model.provider}/${model.id}`]) : undefined;
+	return {
+		keepRecentTokens:
+			tokenSetting(override?.keepRecentTokens) ??
+			tokenSetting(compaction?.keepRecentTokens) ??
+			DEFAULT_KEEP_RECENT_TOKENS,
+		reserveTokens:
+			tokenSetting(override?.reserveTokens) ??
+			tokenSetting(compaction?.reserveTokens) ??
+			DEFAULT_COMPACTION_ECONOMICS.windowReserveTokens,
+	};
+}
+
+function isUserAbort(error: Error): boolean {
+	return error.name === "AbortError" || error.message === "Compaction cancelled";
+}
+
 export function createOnlineContextCompactExtension(options: OnlineContextCompactOptions = {}): ExtensionFactory {
-	const keepRecentTokens = resolveKeepRecentTokens(options.keepRecentTokens);
+	const configuredKeepRecentTokens =
+		options.keepRecentTokens === undefined ? undefined : resolveKeepRecentTokens(options.keepRecentTokens);
 	const cacheWriteReadRatio = resolveCacheWriteReadRatio(options.cacheWriteReadRatio);
 
 	return (pi) => {
@@ -195,6 +163,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 		let activeDebt: CacheDebt | undefined;
 		let nextContinuation: PendingContinuation | undefined;
 		let compactionInFlight = false;
+		let requestPending = false;
 		let compactionRefused = false;
 
 		const releaseContinuation = (): void => {
@@ -216,12 +185,27 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 			selected = undefined;
 			activeDebt = undefined;
 			compactionInFlight = false;
+			requestPending = false;
 			compactionRefused = false;
 		};
 		const ensureRestored = (context: ExtensionContext): void => {
 			if (!restored) restore(context);
 		};
 		const save = (): void => appendOnlineState(pi, state);
+		// Pi 1.0 exposes its effective settings; Pi 0.84.2 does not, so it keeps the documented defaults.
+		const compactionSettings = (context: ExtensionContext): CompactionTokenSettings => {
+			const getSettings = (pi as SettingsSource).getSettings;
+			let settings: unknown;
+			try {
+				settings = typeof getSettings === "function" ? getSettings.call(pi) : undefined;
+			} catch {
+				settings = undefined;
+			}
+			const resolved = resolveCompactionTokenSettings(settings, context.model);
+			return configuredKeepRecentTokens === undefined
+				? resolved
+				: { ...resolved, keepRecentTokens: configuredKeepRecentTokens };
+		};
 		const contextTokens = (context: ExtensionContext): number => {
 			const visible = observedMessages.reduce((total, message) => total + estimateTokens(message), 0);
 			const estimated = visible + tokenEstimate(context.getSystemPrompt());
@@ -263,15 +247,29 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 		pi.on("session_before_tree", () => (compactionInFlight ? { cancel: true } : undefined));
 		pi.on("session_tree", (_event, context) => restore(context));
 
+		// Count a provider request only when it carries an agent-loop context. Pi builds each agent
+		// request with one context event before the provider sends it. A build that never reaches the
+		// provider, such as the one Pi still starts after this extension aborts at a boundary, is not
+		// a request. Pi 1.0 cache warming replays the last request through before_provider_request
+		// without a context event; a replay is not a request either.
 		pi.on("context", (event, context) => {
 			ensureRestored(context);
 			observedMessages = [...event.messages];
+			requestPending = !context.signal?.aborted;
 		});
 
 		pi.on("before_provider_request", (_event, context) => {
+			if (!requestPending) return;
+			requestPending = false;
 			ensureRestored(context);
 			state = recordProviderRequest(state, contextTokens(context));
 			save();
+		});
+
+		// The assistant message ends the request a context event started, whether or not it reached
+		// the provider, so a later replay cannot take its place.
+		pi.on("message_end", (event) => {
+			if (event.message.role === "assistant") requestPending = false;
 		});
 
 		pi.on("input", (event, context) => {
@@ -312,6 +310,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 				return;
 			}
 
+			const { keepRecentTokens, reserveTokens } = compactionSettings(context);
 			const usage = context.getContextUsage();
 			const writeTokens = contextTokens(context);
 			const archiveTokens = estimateNativeCompactionTokens(
@@ -345,7 +344,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 				carriedDebtTokens: state.cacheDebtTokens,
 				cacheDebtRepaymentTokens: state.cacheDebtRepaymentTokens,
 				cacheWriteReadRatio,
-				economics: DEFAULT_COMPACTION_ECONOMICS,
+				economics: { ...DEFAULT_COMPACTION_ECONOMICS, windowReserveTokens: reserveTokens },
 			});
 			const decision: CompactionDecision =
 				priced.compact && archiveTokens === 0
@@ -356,6 +355,38 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 			selected = { decision };
 			context.abort();
 		});
+
+		// Resume the parent task after a boundary compaction. Pi before 0.87 starts the requested turn
+		// synchronously, and this barrier keeps the settlement open until that turn settles. Pi 0.87+
+		// defers a turn requested from agent_settled until every settled handler has returned, keeps
+		// the session idle meanwhile, and awaits the turn before its own settlement completes, so
+		// waiting here would deadlock.
+		const continueParentTask = async (context: ExtensionContext, content: string): Promise<void> => {
+			let resolveContinuation!: () => void;
+			const continuation: PendingContinuation = {
+				promise: new Promise<void>((resolve) => {
+					resolveContinuation = resolve;
+				}),
+				resolve: () => resolveContinuation(),
+			};
+			nextContinuation = continuation;
+			try {
+				pi.sendMessage(
+					{ customType: "sol-pi-online-context-compact", content, display: false },
+					{ triggerTurn: true },
+				);
+			} catch (error) {
+				if (nextContinuation === continuation) nextContinuation = undefined;
+				continuation.resolve();
+				throw error;
+			}
+			if (context.isIdle()) {
+				if (nextContinuation === continuation) nextContinuation = undefined;
+				continuation.resolve();
+				return;
+			}
+			await continuation.promise;
+		};
 
 		pi.on("agent_settled", async (_event, context) => {
 			// sendMessage() starts a turn without returning its promise. Capture the
@@ -417,60 +448,35 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 					});
 				});
 				compactionInFlight = false;
-				const recoverableError = compactionError !== undefined && RECOVERABLE_COMPACTION_ERRORS.has(compactionError.message);
-				if (
-					compactionError &&
-					!recoverableError &&
-					compactionError.name !== "AbortError" &&
-					compactionError.message !== "Compaction cancelled"
-				) {
-					throw compactionError;
-				}
-
+				const failure = compactionError && !isUserAbort(compactionError) ? compactionError : undefined;
+				const recoverableError = failure !== undefined && RECOVERABLE_COMPACTION_ERRORS.has(failure.message);
 				if (recoverableError) {
 					compactionRefused = true;
-					pi.appendEntry("sol-pi-online-context-compact-skipped", { reason: compactionError!.message });
-					if (context.mode === "tui") context.ui.notify(`Online compaction skipped: ${compactionError!.message}`, "warning");
+					pi.appendEntry("sol-pi-online-context-compact-skipped", { reason: failure!.message });
+					if (context.mode === "tui") context.ui.notify(`Online compaction skipped: ${failure!.message}`, "warning");
 				}
-				if (compacted || recoverableError) {
-					let resolveContinuation!: () => void;
-					const continuation: PendingContinuation = {
-						promise: new Promise<void>((resolve) => {
-							resolveContinuation = resolve;
-						}),
-						resolve: () => resolveContinuation(),
-					};
-					nextContinuation = continuation;
-					try {
-						pi.sendMessage(
-							{
-								customType: "sol-pi-online-context-compact",
-								content: compacted ? POST_COMPACTION_PLAN_REMINDER : SKIPPED_COMPACTION_REMINDER,
-								display: false,
-							},
-							{ triggerTurn: true },
-						);
-					} catch (error) {
-						if (nextContinuation === continuation) nextContinuation = undefined;
-						continuation.resolve();
-						throw error;
-					}
-					if (context.isIdle() && nextContinuation === continuation) {
-						// Newer Pi hosts defer runs until settled handlers return. Hand
-						// control back to that host instead of waiting on a deferred run.
-						nextContinuation = undefined;
-						continuation.resolve();
-					} else {
-						// Pi 0.85.1 starts synchronously; keep its print-mode barrier.
-						await continuation.promise;
-					}
-				}
+
+				// The run was stopped for this compaction, so resume it unless the user cancelled.
+				// Known native refusals are recorded as skips; other failures still propagate after resuming.
+				if (compacted) await continueParentTask(context, POST_COMPACTION_PLAN_REMINDER);
+				else if (recoverableError) await continueParentTask(context, SKIPPED_COMPACTION_REMINDER);
+				else if (failure) await continueParentTask(context, COMPACTION_FAILED_RESUME_REMINDER);
+				if (failure && !recoverableError) throw failure;
 			} finally {
 				compactionInFlight = false;
 				activeDebt = undefined;
 				releaseParentContinuation(parentContinuation);
 			}
 		});
+
+		// Pi may run its own threshold compaction for a run this extension has already stopped for a
+		// selected boundary compaction: Pi 0.84.4+ before the run's next request, older Pi after the
+		// run when the aborted request ends with an error. That compaction would consume the
+		// selection, so the boundary would get no continuation. Let the selected compaction run from
+		// agent_settled instead.
+		pi.on("session_before_compact", (event) =>
+			selected && event.reason === "threshold" ? { cancel: true } : undefined,
+		);
 
 		pi.on("session_compact", (event, context) => {
 			ensureRestored(context);
@@ -483,6 +489,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 			pendingBoundary = undefined;
 			selected = undefined;
 			activeDebt = undefined;
+			requestPending = false;
 			observedMessages = [];
 		});
 
@@ -492,6 +499,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 			selected = undefined;
 			activeDebt = undefined;
 			compactionInFlight = false;
+			requestPending = false;
 		});
 	};
 }
