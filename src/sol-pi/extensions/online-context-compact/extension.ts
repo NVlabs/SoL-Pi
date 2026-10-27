@@ -80,8 +80,15 @@ function resolveCacheWriteReadRatio(value: number | null | undefined): number | 
 	return value;
 }
 
-function tokenEstimate(text: string | readonly string[]): number {
-	return Math.ceil(Buffer.byteLength(typeof text === "string" ? text : text.join("\n")) / 4);
+type SystemPromptPart = string | { readonly text?: string };
+
+// Pi types the system prompt as a string, but Pi-compatible hosts can return
+// segments or content parts at runtime, so normalize before measuring bytes.
+function tokenEstimate(prompt: string | readonly SystemPromptPart[]): number {
+	const text = typeof prompt === "string"
+		? prompt
+		: prompt.map((part) => (typeof part === "string" ? part : (part.text ?? ""))).join("\n");
+	return Math.ceil(Buffer.byteLength(text) / 4);
 }
 
 function result(text: string, details: Readonly<Record<string, unknown>>): AgentToolResult<Readonly<Record<string, unknown>>> {

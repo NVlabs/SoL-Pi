@@ -50,8 +50,11 @@ function assistant(text: string): AgentMessage {
 	};
 }
 
-// OMP can return prompt segments even though Pi's public type only allows a string
-function systemPromptGetter(prompt: string | readonly string[]): ExtensionContext["getSystemPrompt"] {
+// OMP and other Pi-compatible hosts can return prompt segments or content parts
+// even though Pi's public type only allows a string
+type SystemPromptInput = string | readonly (string | { readonly type: string; readonly text?: string })[];
+
+function systemPromptGetter(prompt: SystemPromptInput): ExtensionContext["getSystemPrompt"] {
 	return (() => prompt) as ExtensionContext["getSystemPrompt"];
 }
 
@@ -287,6 +290,12 @@ describe("Online Context Compact extension", () => {
 		{ name: "single segment", prompt: ["abcde"], tokens: 2 },
 		{ name: "readonly segments", prompt: Object.freeze(["a", "b", "c"]), tokens: 2 },
 		{ name: "UTF-8 segments", prompt: ["你好", "🌍"], tokens: 3 },
+		{
+			name: "content parts",
+			prompt: Object.freeze([{ type: "text", text: "abcde" }, { type: "text", text: "fghij" }]),
+			tokens: 3,
+		},
+		{ name: "parts without text", prompt: Object.freeze([{ type: "text", text: "abcde" }, { type: "image" }]), tokens: 2 },
 	])("estimates $name system prompts before provider requests", async ({ prompt, tokens }) => {
 		const pi = new FakePi();
 		registerOnlineContextCompact(pi.asExtensionApi());
