@@ -30,7 +30,6 @@ import { formatSavingsBytes, showSolPiSavings } from "../../tui.ts";
 import { archiveBody, archiveRoot } from "./archive.ts";
 import { reducibleToolResult } from "./candidate.ts";
 import {
-	DIAGNOSTIC_COMMAND,
 	isRecord,
 	LIKELY_SECRET,
 	loadReducerConfig,
@@ -72,8 +71,10 @@ export async function reduceToolResult(
 	context: ExtensionContext,
 ): Promise<ReducedToolResult | undefined> {
 	if (isNestedToolResult(event)) return undefined;
+	// `reducibleToolResult()` applies the DIAGNOSTIC_COMMAND gate itself, before
+	// it resolves the untruncated body.
 	const reducible = await reducibleToolResult(event);
-	if (!reducible || !DIAGNOSTIC_COMMAND.test(reducible.command)) return undefined;
+	if (!reducible) return undefined;
 	const { body, command } = reducible;
 	if (Buffer.byteLength(body, "utf8") < config.minBytes) return undefined;
 	// The receipt status follows `isError`. When the result's own text disagrees
