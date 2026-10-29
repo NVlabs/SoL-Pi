@@ -1,5 +1,7 @@
 # Pi Compatibility
 
+The source lockfile includes patched Vite and source-map-js releases. Pi 0.84.2's published npm shrinkwrap still pins nested Undici 8.9.0 and brace-expansion 5.0.9; root overrides do not replace those copies, so the required high-severity audit remains blocked. Keep Pi unmodified and do not suppress the audit to bypass that upstream dependency gate.
+
 SoL-Pi is developed and tested against `@earendil-works/pi-coding-agent` 0.84.2. Its public API surface is also type-checked and exercised against Pi 0.81.1, the base used by the original Pi fork. The runtime range is deliberately expressed as a peer dependency because Pi owns installation and upgrade of its packages.
 
 SoL-Pi imports only public package exports:
