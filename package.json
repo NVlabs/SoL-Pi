@@ -56,8 +56,7 @@
 	"overrides": {
 		"nanoid": "3.3.18",
 		"postcss": "8.5.26",
-		"protobufjs": "7.6.5",
-		"vite": "8.1.6"
+		"protobufjs": "7.6.5"
 	},
 	"license": "MIT"
 }
