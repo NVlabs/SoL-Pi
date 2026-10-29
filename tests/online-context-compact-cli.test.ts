@@ -108,7 +108,10 @@ export default function (pi) {
 		expect.soft(compactions[0]).toMatchObject({
 			summary,
 			fromHook: true,
-			details: { reason: "manual", customInstructions: BOUNDARY_COMPACTION_INSTRUCTIONS },
+			details: { reason: "manual", customInstructions: expect.stringContaining(BOUNDARY_COMPACTION_INSTRUCTIONS) },
+		});
+		expect.soft(compactions[0]).toMatchObject({
+			details: { customInstructions: expect.stringContaining('"stepId":"build","goal":"build it"') },
 		});
 		const reminders = entries.filter((entry) =>
 			entry.type === "custom_message" && entry.customType === "sol-pi-online-context-compact",
