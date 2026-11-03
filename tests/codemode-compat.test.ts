@@ -251,7 +251,7 @@ async function runCombinedSession(mode: CodemodeMode) {
 		step("big", () => script(BIG_SCRIPT, "big-1")),
 		step("big-done", () => fauxAssistantMessage(fauxText("big done"))),
 		// Prompt 2 (new tool loadout): fused writes and diagnostic bash runs inside scripts. The large
-		// result is packed from this prompt's second request on.
+		// result is packed from this prompt's first request on.
 		step("fusion", () => script(FUSION_SCRIPT, "fusion-1")),
 		step("reducer", () => script(REDUCER_SCRIPT, "reduce-1")),
 		...(mode === "on"
@@ -532,17 +532,16 @@ describe.skipIf(createCodemodeExtension === undefined)("SoL-Pi with Pi codemode 
 				expect(run.reducerCalls).toBe(0);
 			}
 
-			// 5. ObservationPack: the large script result is packed after two full sends and recalled from a script.
+			// 5. ObservationPack: the large script result is packed after one full send and recalled from a script.
 			const bigOriginal = wireText(run.storedBeforeCompaction.find((message) => message.toolCallId === "big-1"));
 			expect(Buffer.byteLength(bigOriginal, "utf8")).toBeGreaterThan(THRESHOLD_BYTES);
 			const preCompaction = run.requests.filter((entry) => entry.prompt < 4);
 			const bigSends = preCompaction.slice(1).map((entry) => wireText(resultIn(entry, "big-1")));
 			expect(bigSends[0]).toBe(bigOriginal);
-			expect(bigSends[1]).toBe(bigOriginal);
-			const placeholder = bigSends[2]!;
+			const placeholder = bigSends[1]!;
 			expect(placeholder).toMatch(/^\[large tool result replaced/u);
 			expect(placeholder).toMatch(/tool: codemode/u);
-			for (const later of bigSends.slice(2)) expect(later).toBe(placeholder);
+			for (const later of bigSends.slice(1)) expect(later).toBe(placeholder);
 			const recalled = scriptPayload(resultIn(request(run, "recall-done"), "recall-1"));
 			expect(recalled).toEqual({
 				length: bigOriginal.length,
@@ -584,8 +583,10 @@ describe.skipIf(createCodemodeExtension === undefined)("SoL-Pi with Pi codemode 
 					});
 				}
 			}
-			// The tool-declaration delta after the large result, in the last full send and the first packed one.
-			expect(wireText(resultIn(request(run, "fusion"), "big-1"))).toBe(bigOriginal);
+			// The tool-declaration delta after the large result. With one full send, the result is already
+			// packed in the first request that carries the delta ("fusion"), so the delta is compared
+			// across the first and second packed sends.
+			expect(wireText(resultIn(request(run, "fusion"), "big-1"))).toBe(placeholder);
 			expect(wireText(resultIn(request(run, "reducer"), "big-1"))).toBe(placeholder);
 			expect(request(run, "fusion").messages[delta!]?.role).toBe("system");
 			expect(request(run, "reducer").messages[delta!]).toEqual(request(run, "fusion").messages[delta!]);

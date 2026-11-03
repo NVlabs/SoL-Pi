@@ -5,7 +5,7 @@
 /**
  * ObservationPack - keep large tool results reachable without replaying them.
  *
- * A large tool result is sent in full for its first few provider requests, then
+ * A large tool result is sent in full for its first provider request, then
  * replaced with a short, stable placeholder for every later request. The
  * original bytes are archived by observation id outside the provider context,
  * and the agent pulls exact pages back with the registered `obs_recall` tool.

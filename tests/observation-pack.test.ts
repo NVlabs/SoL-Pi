@@ -167,23 +167,23 @@ describe("observation pack", () => {
 		expect(componentText(rendered)).toContain("Money saved");
 	});
 
-	it("keeps the first two requests full and reuses one stable placeholder afterwards", async () => {
+	it("keeps the first request full and reuses one stable placeholder afterwards", async () => {
 		const sessionDir = await sessionRoot();
 		const body = `head line\n${repeatPastThreshold("middle line\n")}tail line\n`;
 		const message = toolResult(body);
 		const projected = await project(observationPackPi(), message, sessionDir, 4);
 
-		expect(FULL_SENDS).toBe(2);
+		expect(FULL_SENDS).toBe(1);
 		expect(projected[0]).toBe(body);
-		expect(projected[1]).toBe(body);
-		expect(projected[2]).not.toBe(body);
-		expect(projected[2]).toBe(projected[3]);
-		expect(projected[2]).toMatch(/^\[large tool result replaced/u);
-		expect(projected[2]).toMatch(/head line/u);
-		expect(projected[2]).toMatch(/tail line/u);
+		expect(projected[1]).not.toBe(body);
+		expect(projected[1]).toBe(projected[2]);
+		expect(projected[1]).toBe(projected[3]);
+		expect(projected[1]).toMatch(/^\[large tool result replaced after its first provider request\]/u);
+		expect(projected[1]).toMatch(/head line/u);
+		expect(projected[1]).toMatch(/tail line/u);
 		expect(resultText(message)).toBe(body);
 
-		const id = projected[2]?.match(/id: (obs_[a-f0-9]{24})/u)?.[1];
+		const id = projected[1]?.match(/id: (obs_[a-f0-9]{24})/u)?.[1];
 		expect(id).toBeTruthy();
 		expect(await readFile(observationPath(sessionDir, id!), "utf8")).toBe(body);
 	});
@@ -224,7 +224,6 @@ describe("observation pack", () => {
 
 		for (const context of [contextA, contextB]) {
 			expect(resultText((await pi.emitContext([message], context))[0]!)).toBe(body);
-			expect(resultText((await pi.emitContext([message], context))[0]!)).toBe(body);
 			expect(resultText((await pi.emitContext([message], context))[0]!)).toMatch(/^\[large tool result replaced/u);
 		}
 
@@ -237,8 +236,8 @@ describe("observation pack", () => {
 		const pi = observationPackPi();
 		const first = toolResult(`first\n${"a".repeat(THRESHOLD_BYTES + 100)}\n`, { toolCallId: "first" });
 		const second = toolResult(`second\n${"b".repeat(THRESHOLD_BYTES + 100)}\n`, { toolCallId: "second" });
-		const firstSends = await project(pi, first, sessionDir, 3);
-		const oldPlaceholder = firstSends[2];
+		const firstSends = await project(pi, first, sessionDir, 2);
+		const oldPlaceholder = firstSends[1];
 		expect(oldPlaceholder).toBeTruthy();
 
 		const combined: string[][] = [];
@@ -250,9 +249,10 @@ describe("observation pack", () => {
 		expect(combined[0]?.[0]).toBe(oldPlaceholder);
 		expect(combined[1]?.[0]).toBe(oldPlaceholder);
 		expect(combined[2]?.[0]).toBe(oldPlaceholder);
+		// `second` is new, so it gets its one full send before its placeholder.
 		expect(combined[0]?.[1]).toBe(resultText(second));
-		expect(combined[1]?.[1]).toBe(resultText(second));
-		expect(combined[2]?.[1]).not.toBe(resultText(second));
+		expect(combined[1]?.[1]).not.toBe(resultText(second));
+		expect(combined[2]?.[1]).toBe(combined[1]?.[1]);
 	});
 
 	it("keeps mid-conversation system messages in place while packing", async () => {
@@ -315,16 +315,16 @@ describe("observation pack", () => {
 
 		expect(results).toEqual([undefined, undefined, undefined]);
 		expect(seen[0]).toBe(body);
-		expect(seen[1]).toBe(body);
-		expect(seen[2]).toMatch(/^\[large tool result replaced/u);
-		expect(seen[2]).toMatch(/tool: codemode/u);
+		expect(seen[1]).toMatch(/^\[large tool result replaced/u);
+		expect(seen[1]).toMatch(/tool: codemode/u);
+		expect(seen[2]).toBe(seen[1]);
 	});
 
 	it("recalls from durable storage after a restart of the extension", async () => {
 		const sessionDir = await sessionRoot();
 		const body = `durable observation\n${repeatPastThreshold("recall line\n")}`;
 		const projected = await project(observationPackPi(), toolResult(body), sessionDir, 3);
-		const id = projected[2]?.match(/id: (obs_[a-f0-9]{24})/u)?.[1];
+		const id = projected[1]?.match(/id: (obs_[a-f0-9]{24})/u)?.[1];
 		expect(id).toBeTruthy();
 
 		const resumed = observationPackPi();
@@ -361,8 +361,7 @@ describe("observation pack", () => {
 		const projected = await project(observationPackPi(), message, sessionDir, 3);
 
 		expect(projected[0]).toBe(body);
-		expect(projected[1]).toBe(body);
-		expect(projected[2]).toMatch(new RegExp(`id: ${id}`, "u"));
+		expect(projected[1]).toMatch(new RegExp(`id: ${id}`, "u"));
 	});
 
 	it("fails recall closed when an object path is replaced by a symlink", async (ctx) => {
@@ -605,15 +604,15 @@ function expectRealSessionPacking(run: Awaited<ReturnType<typeof runRealSession>
 	expect(run.requests).toHaveLength(5);
 	const bigResult = (messages: WireMessage[]) => wireText(messages.find((message) => message.toolCallId === "big-1"));
 
-	// Full for two provider requests, then one stable placeholder. A codemode
+	// Full for one provider request, then one stable placeholder. A codemode
 	// result wraps the script output, so compare against the stored result.
 	const original = bigResult(run.stored);
 	expect(original).toContain(body);
 	expect(bigResult(run.requests[1]!)).toBe(original);
-	expect(bigResult(run.requests[2]!)).toBe(original);
-	const placeholder = bigResult(run.requests[3]!);
+	const placeholder = bigResult(run.requests[2]!);
 	expect(placeholder).toMatch(/^\[large tool result replaced/u);
 	expect(placeholder).toMatch(scriptTool ? /tool: codemode/u : /tool: emit_output/u);
+	expect(bigResult(run.requests[3]!)).toBe(placeholder);
 	expect(bigResult(run.requests[4]!)).toBe(placeholder);
 	// Recall returns the original bytes.
 	const recall = run.requests[4]!.find((message) => message.toolCallId === "recall-1");
@@ -625,7 +624,7 @@ function expectRealSessionPacking(run: Awaited<ReturnType<typeof runRealSession>
 	// included. Codemode "only" hides the declarations of script-callable tools
 	// from requests (and re-projects them when the loadout changes), so system
 	// messages are compared with the transcript without their declarations.
-	// Packing starts on the fourth request: from the loadout change on, every
+	// Packing starts on the third request: from the loadout change on, every
 	// system message must be sent byte-identically.
 	const roles = (messages: WireMessage[]) => messages.map((message) => message.role);
 	const withoutDeclarations = (message: WireMessage) => {

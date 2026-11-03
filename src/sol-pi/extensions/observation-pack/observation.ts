@@ -12,7 +12,15 @@ import type { TextContent, ToolResultMessage } from "@earendil-works/pi-ai";
 /** Only tool results larger than this participate. */
 export const THRESHOLD_BYTES = 10 * 1024;
 /** Provider requests that still carry the full payload before the placeholder takes over. */
-export const FULL_SENDS = 2;
+/**
+ * Replace at the second send. Pi puts the Anthropic cache breakpoint on the last
+ * tool result of each request, so a swap at the second send falls back to the
+ * breakpoint one request earlier and rewrites only the assistant message between
+ * them. One send later it also rewrites that whole turn's tool results, at the
+ * cache-write price (25x a read on Claude Sonnet 5.5), which short sessions never
+ * earn back; see docs/compatibility.md.
+ */
+export const FULL_SENDS = 1;
 /** Placeholder excerpt budget, split evenly between head and tail, whole lines only. */
 export const PLACEHOLDER_EXCERPT_BYTES = 1024;
 
@@ -181,7 +189,7 @@ export function placeholderFor(observation: Observation): string {
 	const head = completeLineExcerpt(observation.text, headBudget, false);
 	const tail = completeLineExcerpt(observation.text, tailBudget, true);
 	return [
-		`[large tool result replaced after its first ${FULL_SENDS} provider requests]`,
+		"[large tool result replaced after its first provider request]",
 		`id: ${observation.id}`,
 		`tool: ${observation.toolName}`,
 		`original_bytes: ${observation.bytes}`,
