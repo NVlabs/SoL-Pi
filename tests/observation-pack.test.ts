@@ -411,6 +411,48 @@ describe("observation pack", () => {
 		expect(Buffer.from(recalled, "utf8")).toEqual(Buffer.from(body, "utf8"));
 	});
 
+	it("ends the paging loop: the eof header drops next_offset and says do not continue", async () => {
+		const sessionDir = await sessionRoot();
+		const body = `luna ☾\n${"0123456789abcdef\n".repeat(1_200)}final line`;
+		const message = toolResult(body);
+		const id = observationId(message);
+		const pi = observationPackPi();
+		await project(pi, message, sessionDir, 3);
+		const recall = pi.tool("obs_recall");
+
+		const textOf = (result: { content: Array<{ type: string; text?: string }> }): string =>
+			result.content.flatMap((block) => (block.type === "text" ? [block.text ?? ""] : [])).join("\n");
+		let offset = 0;
+		let midPages = 0;
+		for (;;) {
+			const result = await recall.execute("recall-eof", { id, offset }, undefined, undefined, fakeToolContext(sessionDir));
+			const [header, hint] = textOf(result).split("\n");
+			const details = result.details as { eof: boolean; nextOffset: number };
+			if (!details.eof) {
+				expect(header).toMatch(/^\[obs_recall id=obs_[a-f0-9]{24} offset=\d+ next_offset=\d+ eof=false\]$/u);
+				expect(hint).toContain("use next_offset to continue");
+				offset = details.nextOffset;
+				midPages += 1;
+				continue;
+			}
+			expect(header).toMatch(/^\[obs_recall id=obs_[a-f0-9]{24} offset=\d+ eof=true\]$/u);
+			expect(header).not.toContain("next_offset");
+			expect(hint).toContain("do not continue");
+			expect(hint).not.toContain("use next_offset");
+			expect(midPages).toBeGreaterThan(0);
+			break;
+		}
+	});
+
+	it("teaches the stop condition in the placeholder retrieve hint", async () => {
+		const sessionDir = await sessionRoot();
+		const message = toolResult(repeatPastThreshold("big result line\n"));
+		const pi = observationPackPi();
+		await project(pi, message, sessionDir, 3);
+		const placeholder = resultText((await pi.emitContext([message], fakeContext(sessionDir)))[0]!);
+		expect(placeholder).toContain("stop when eof=true");
+	});
+
 	it("fails storage closed when the observation directory is a symlink", async (ctx) => {
 		if (!(await canCreateSymlinks())) ctx.skip();
 		const sessionDir = await sessionRoot();

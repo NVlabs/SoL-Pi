@@ -187,7 +187,7 @@ export function placeholderFor(observation: Observation): string {
 		`original_bytes: ${observation.bytes}`,
 		`original_lines: ${observation.lines}`,
 		`estimated_tokens: ${observation.tokens}`,
-		`retrieve: call obs_recall with {"id":"${observation.id}","offset":0}; continue with returned next_offset`,
+		`retrieve: call obs_recall with {"id":"${observation.id}","offset":0}; continue with returned next_offset; stop when eof=true`,
 		`[first complete lines, up to ${headBudget} bytes]`,
 		head,
 		`[middle omitted; last complete lines, up to ${tailBudget} bytes]`,
