@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -409,6 +409,31 @@ describe("observation pack", () => {
 
 		expect(recalled).toBe(body);
 		expect(Buffer.from(recalled, "utf8")).toEqual(Buffer.from(body, "utf8"));
+	});
+
+	it("never packages the recall output of an observation", async () => {
+		const sessionDir = await sessionRoot();
+		const stored = "x".repeat(THRESHOLD_BYTES + 800);
+		const message = toolResult(stored);
+		const id = observationId(message);
+		const pi = observationPackPi();
+		await project(pi, message, sessionDir, FULL_SENDS + 1);
+		const recall = pi.tool("obs_recall");
+		const recalled = await recall.execute(
+			"recall-1", { id, offset: 0 }, undefined, undefined, fakeToolContext(sessionDir),
+		);
+		const recallMessage: ToolResultMessage = {
+			role: "toolResult",
+			toolCallId: "recall-1",
+			toolName: "obs_recall",
+			content: recalled.content,
+			isError: false,
+			timestamp: 1,
+		};
+		const projections = await project(pi, recallMessage, sessionDir, FULL_SENDS + 2);
+		expect(new Set(projections).size).toBe(1);
+		expect(projections[0]).toContain(`id=${id}`);
+		expect(await readdir(observationObjectsDirectory(sessionDir))).toEqual([`${id}.txt`]);
 	});
 
 	it("ends the paging loop: the eof header drops next_offset and says do not continue", async () => {

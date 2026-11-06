@@ -98,6 +98,9 @@ export function isObservationId(id: string): boolean {
 export function createObservation(message: ToolResultMessage, runtimeRoot: string): Observation | undefined {
 	const text = textFromResult(message);
 	if (containsReducerReceipt(text)) return undefined;
+	// Recalling an observation is the delivery path: packaging the recall output
+	// would mint a new observation of the same payload and loop packaging forever.
+	if (message.toolName === "obs_recall") return undefined;
 	const bytes = Buffer.byteLength(text, "utf8");
 	if (bytes <= THRESHOLD_BYTES) return undefined;
 	if (!runtimeRoot) throw new Error("SoL-Pi runtime directory is unavailable");
