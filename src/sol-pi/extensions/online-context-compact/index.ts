@@ -19,6 +19,7 @@ export {
 	createOnlineContextCompactExtension,
 	DEFAULT_KEEP_RECENT_TOKENS,
 	DEFAULT_NATIVE_SUMMARY_TOKEN_ESTIMATE,
+	estimateNativeCompactionTokens,
 	POST_COMPACTION_PLAN_REMINDER,
 	type OnlineContextCompactOptions,
 	resolveKeepRecentTokens,
