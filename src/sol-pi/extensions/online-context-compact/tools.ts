@@ -45,15 +45,25 @@ const planStepSchema = Type.Object(
 	{ additionalProperties: false },
 );
 
+/**
+ * Pi 1.0 tool exposure: keep update_plan declared to the model, including in codemode `only` mode,
+ * and never callable from codemode scripts. A script call gets a nested `<parent>/<n>` id that no
+ * turn reports as a tool result, so its plan boundary could never compact. Pi 0.84.2 has no
+ * exposure field and ignores it; spreading a constant keeps its tool type free of the property.
+ */
+const MODEL_ONLY_EXPOSURE = { exposure: "model-only" } as const;
+
 export function registerOnlineTools(pi: ExtensionAPI, handlers: OnlineToolHandlers): void {
 	pi.registerTool({
+		...MODEL_ONLY_EXPOSURE,
 		name: "update_plan",
 		label: "Update plan",
 		description:
-			"Replace the complete working plan. A newly completed step becomes a safe point where SoL-Pi may compact context if doing so is economical.",
+			"Replace the complete working plan. Completing a previously registered unfinished step becomes a safe point where SoL-Pi may compact context if doing so is economical. Newly introduced completed steps are recorded as history.",
 		promptSnippet: "Keep the working plan current",
 		promptGuidelines: [
 			"Send the complete plan on every update_plan call.",
+			"Preserve step IDs and register unfinished steps before reporting their completion.",
 			"Keep at most one step in_progress and mark finished steps completed.",
 			"When completing a step, include concise progress evidence when available.",
 		],

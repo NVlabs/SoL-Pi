@@ -7,11 +7,12 @@ Installation and configuration are complete only when Pi remains unmodified, the
 ## Rules
 
 - Do not modify, patch, fork, or vendor upstream Pi. SoL-Pi must load as a standalone extension through Pi's public package interface.
-- Use Node.js 22.19 or newer and the tested Pi release `@earendil-works/pi-coding-agent@0.84.2`. Treat a different Pi version as a compatibility change and rerun the full suite before using it.
+- Use Node.js 22.19 or newer and a tested Pi release: `@earendil-works/pi-coding-agent@1.3.0` (latest tested, the default) or `@earendil-works/pi-coding-agent@0.84.2` (supported floor). `@earendil-works/pi-coding-agent@1.0.4` is also tested, but do not install it or any other Pi 1.0.x or 1.1.0 release fresh: those releases do not pin their internal packages, so a fresh install now pairs them with newer ones and Pi fails to start. Treat any other Pi version as a compatibility change: `scripts/check-pi-compat.mjs --strict` rejects it, so use it only on explicit user direction and after the full suite passes against it.
 - Do not clean, reset, switch, or overwrite unrelated repository changes.
 - Do not print, log, commit, upload, or include any secret in a command line. Check only whether a credential is present.
 - Keep SoL-Pi settings in `sol-pi.json`. The Evidence-Preserving Reducer provider/model route is a SoL-Pi setting; provider URLs, credentials, the main agent model, and shell behavior remain Pi settings.
-- Keep persistent artifacts under Pi's session-derived `sol-pi/<session-id>/` root; do not configure a separate storage path.
+- Keep persistent artifacts under Pi's session-derived `sol-pi/<session-id>/` root. For `--no-session` and in-memory sessions, use the automatic private directory under the system temporary directory; do not configure a separate storage path. Temporary archives remain after worker exit for callers to read, with cleanup managed by the host or caller.
+- Pi codemode (`codemode.mode` `"on"` or `"only"`) is a Pi setting. SoL-Pi works with either and needs no configuration for it; see [Codemode](docs/compatibility.md#codemode).
 
 ## Inputs
 
@@ -41,24 +42,30 @@ Require Node.js 22.19 or newer. Install from the lockfile and run the source che
 npm ci --ignore-scripts
 npm run check
 npm audit --audit-level=high
-node scripts/check-pi-compat.mjs
+node scripts/check-pi-compat.mjs --strict
 npx vitest run tests/all-mechanisms.test.ts
 ```
 
-`npm run check` covers type checking, the complete test suite, and package inspection. `tests/all-mechanisms.test.ts` confirms that one all-enabled configuration registers all four mechanisms against Pi's public extension API. The tests run without a model provider.
+`npm run check` covers type checking, the complete test suite, and package inspection. These checks run against the checkout's development dependency, Pi 1.3.0. `tests/all-mechanisms.test.ts` confirms that one all-enabled configuration registers all four mechanisms against Pi's public extension API. The tests run without a model provider.
 
 Stop if any command fails. Do not hide a failure with `|| true` or replace `npm ci` with an unlocked install.
 
 ## Phase 2: install Pi and SoL-Pi
 
-Install the tested Pi release without changing its source:
+Install the tested Pi release without changing its source. Use `1.3.0` unless the user asked for `0.84.2`:
 
 ```bash
-npm install --global --ignore-scripts @earendil-works/pi-coding-agent@0.84.2
+npm install --global --ignore-scripts @earendil-works/pi-coding-agent@1.3.0
 pi --version
 ```
 
-Require `pi --version` to report `0.84.2`.
+Require `pi --version` to report the version you installed. From `sol_pi_root`, check that installed Pi against the APIs SoL-Pi uses:
+
+```bash
+node scripts/check-pi-compat.mjs --strict --pi-root "$(npm root -g)/@earendil-works/pi-coding-agent"
+```
+
+Require exit status 0. The output must name the installed version; with `--strict`, an untested version fails.
 
 For a project-local registration, run this from `target_project` and substitute the resolved absolute `sol_pi_root`:
 
@@ -123,7 +130,7 @@ Require exit status 0 and retain its JSON output. The check applies SoL-Pi's def
 ## Phase 4: verify the installation
 
 1. Run `pi list --approve` from `target_project` and confirm the expected SoL-Pi source and scope.
-2. Run `check-sol-pi-config.mjs --require-all-enabled` against the effective `sol-pi.json`.
+2. Run `check-sol-pi-config.mjs --require-all-enabled` against the effective `sol-pi.json`, and re-run `check-pi-compat.mjs --strict --pi-root` against the installed Pi.
 3. Re-run `npx vitest run tests/all-mechanisms.test.ts` from `sol_pi_root`.
 4. Start Pi with `--offline --approve`, send no prompt, confirm there is no extension load error, and exit.
 5. Confirm that upstream Pi was not patched and that the SoL-Pi checkout contains no vendored Pi monorepo source.
@@ -134,7 +141,7 @@ Report:
 
 - SoL-Pi absolute path, branch, and commit;
 - repository state before and after installation;
-- Node, npm, and Pi versions;
+- Node, npm, and Pi versions, and the `check-pi-compat.mjs` result for the installed Pi;
 - install scope and the exact entry shown by `pi list`;
 - effective config path, four enabled flags, EPR reducer provider/model, and `cacheWriteReadRatio`, without secrets;
 - every validation command and result;

@@ -1,0 +1,945 @@
+#!/usr/bin/env python3
+"""Run a task with SoL-Pi (all four mechanisms) from Claude Code, Codex, or a shell.
+
+SoL-Pi is loaded from this repository checkout into a pinned Pi release (the
+version in package.json) with its own Pi agent directory. Models and logins come
+from the user's own Pi configuration (models.json and auth.json in ~/.pi/agent),
+which is linked, not copied or changed.
+
+  sol-pi-run setup                     install the pinned Pi, register this checkout, write config, run checks
+  sol-pi-run doctor [--live]           verify all four mechanisms load (--live: one tiny model call)
+  sol-pi-run models [search]           show the default model, the reducer, and the models Pi can use
+  sol-pi-run run [opts] -- "task"      run one task in the current directory and print a summary
+  sol-pi-run start [opts] -- "task"    same, detached; prints a run id
+  sol-pi-run status|wait|result <id>   inspect a detached run
+  sol-pi-run tui [pi args]             open the SoL-Pi interactive terminal UI
+"""
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+import uuid
+from pathlib import Path
+
+TOOL_DIR = Path(__file__).resolve().parent.parent   # examples/sol-pi-skill/
+# SoL-Pi source: this repository, unless SOL_PI_SRC points at another checkout.
+SRC = Path(os.environ.get('SOL_PI_SRC', TOOL_DIR.parent.parent)).resolve()
+
+
+def _pinned_pi_version():
+    """The Pi release this checkout is tested against (its devDependency)."""
+    try:
+        deps = json.loads((SRC / 'package.json').read_text()).get('devDependencies', {})
+        return deps['@earendil-works/pi-coding-agent']
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+PI_VERSION = _pinned_pi_version()
+HOME = Path(os.environ.get('SOL_PI_HOME', Path.home() / '.sol-pi'))
+PI_PREFIX = HOME / 'pi' / str(PI_VERSION)
+PI_BIN = PI_PREFIX / 'node_modules' / '.bin' / 'pi'
+AGENT_DIR = HOME / 'agent'
+RUNS = HOME / 'runs'
+PROBE = TOOL_DIR / 'probe' / 'sol-pi-probe.ts'
+# Files linked from the user's own Pi agent directory (see user_pi_dir()).
+LINKED_PI_FILES = ('models.json', 'auth.json')
+SOL_PI_TOOLS = {'edit', 'write', 'obs_recall', 'update_plan'}
+
+
+def die(message, code=2):
+    print(f'sol-pi-run: {message}', file=sys.stderr)
+    sys.exit(code)
+
+
+def sh(cmd, **kw):
+    return subprocess.run(cmd, text=True, capture_output=True, **kw)
+
+
+def writable(path):
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe_file = path / f'.write-probe-{os.getpid()}'
+        probe_file.touch()
+        probe_file.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def runtime_dirs():
+    """Agent dir and runs dir for this process.
+
+    Pi takes a lock file next to settings.json, so the agent dir must be writable.
+    Sandboxed hosts (Codex workspace-write) can only write the workspace and temp
+    dirs; there the managed config is copied into a private temp directory.
+    """
+    if writable(AGENT_DIR) and writable(RUNS):
+        return AGENT_DIR, RUNS
+    base = Path(os.environ.get('TMPDIR', '/tmp')) / f'sol-pi-{os.getuid()}'
+    agent = base / 'agent'
+    agent.mkdir(parents=True, exist_ok=True)
+    os.chmod(base, 0o700)
+    if (AGENT_DIR / 'sol-pi.json').exists():
+        write_json(agent / 'sol-pi.json', json.loads((AGENT_DIR / 'sol-pi.json').read_text()))
+    settings = json.loads((AGENT_DIR / 'settings.json').read_text()) if (AGENT_DIR / 'settings.json').exists() else {}
+    # Package paths in settings are relative to the agent dir; make them absolute.
+    settings['packages'] = [str((AGENT_DIR / p).resolve()) if isinstance(p, str) and p.startswith('.') else p
+                            for p in settings.get('packages', [])]
+    write_json(agent / 'settings.json', settings)
+    for name in LINKED_PI_FILES:
+        src = user_pi_dir() / name
+        if src.exists() and not (agent / name).exists():
+            try:
+                shutil.copyfile(src, agent / name)
+                os.chmod(agent / name, 0o600)
+            except OSError:
+                pass
+    return agent, base / 'runs'
+
+
+def runs_dir():
+    return runtime_dirs()[1]
+
+
+def find_run(run_id):
+    for base in dict.fromkeys([runs_dir(), RUNS]):
+        if (base / run_id).exists():
+            return base / run_id
+    die(f'unknown run {run_id}')
+
+
+def pi_env(extra=None):
+    env = dict(os.environ)
+    env['PI_CODING_AGENT_DIR'] = str(runtime_dirs()[0])
+    # Keep the Claude Code / Codex session markers from leaking into Pi's shell tool.
+    for name in ('CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_CHILD_SESSION',
+                 'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN'):
+        env.pop(name, None)
+    env['SOL_PI_DEPTH'] = str(int(os.environ.get('SOL_PI_DEPTH', '0') or 0) + 1)
+    env.update(extra or {})
+    return env
+
+
+def user_pi_dir():
+    """The user's own Pi agent directory (never the managed one)."""
+    for candidate in (os.environ.get('SOL_PI_USER_PI_DIR'), os.environ.get('PI_CODING_AGENT_DIR')):
+        if candidate and Path(candidate).expanduser().resolve() != AGENT_DIR.resolve():
+            return Path(candidate).expanduser()
+    return Path.home() / '.pi' / 'agent'
+
+
+def user_default_model():
+    """SOL_PI_MODEL, else the default model saved in the user's Pi settings, else None."""
+    if os.environ.get('SOL_PI_MODEL'):
+        return os.environ['SOL_PI_MODEL']
+    try:
+        settings = json.loads((user_pi_dir() / 'settings.json').read_text())
+    except (OSError, ValueError):
+        return None
+    if settings.get('defaultProvider') and settings.get('defaultModel'):
+        return f"{settings['defaultProvider']}/{settings['defaultModel']}"
+    return None
+
+
+def resolve_route(name):
+    """A model for `pi --model`: as given, or the user's default. None lets Pi choose."""
+    if name in (None, '', 'default'):
+        return user_default_model()
+    return name
+
+
+def split_route(route):
+    provider, _, model = route.partition('/')
+    if not model:
+        die(f'model route must be provider/model, got {route!r}')
+    return provider, model
+
+
+# ---------------------------------------------------------------- configuration
+
+def price(cost, usage):
+    """Cost of one usage record at a Pi model's per-million-token prices.
+
+    Mirrors Pi's calculateCost: the highest long-context tier whose threshold the
+    prompt exceeds replaces the base prices.
+    """
+    if not cost:
+        return 0.0
+    fields = ('input', 'cacheRead', 'cacheWrite', 'output')
+    tokens = {f: usage.get(f, 0) or 0 for f in fields}
+    prompt = tokens['input'] + tokens['cacheRead'] + tokens['cacheWrite']
+    rates, matched = cost, -1
+    for tier in cost.get('tiers') or []:
+        above = tier.get('inputTokensAbove', 0)
+        if prompt > above > matched:
+            rates, matched = tier, above
+    return sum(tokens[f] * (rates.get(f) or 0) for f in fields) / 1e6
+
+
+def sol_pi_config(reducer_route=None):
+    """All four mechanisms on. Without a reducer route SoL-Pi uses its built-in one."""
+    config = {'version': 1, 'actionFusion': True, 'observationPack': True,
+              'evidencePreservingReducer': True, 'onlineContextCompact': True,
+              'cacheWriteReadRatio': 12.5}
+    if reducer_route:
+        provider, model = split_route(reducer_route)
+        config.update(evidencePreservingReducerProvider=provider, evidencePreservingReducerModel=model)
+    return config
+
+
+def configured_reducer():
+    """The reducer route in the managed sol-pi.json, or None for SoL-Pi's built-in one."""
+    try:
+        config = json.loads((AGENT_DIR / 'sol-pi.json').read_text())
+    except (OSError, ValueError):
+        return None
+    if config.get('evidencePreservingReducerProvider') and config.get('evidencePreservingReducerModel'):
+        return f"{config['evidencePreservingReducerProvider']}/{config['evidencePreservingReducerModel']}"
+    return None
+
+
+def write_json(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(data, indent=2) + '\n'
+    if path.exists() and path.read_text() == text:
+        return
+    tmp = path.with_suffix(path.suffix + f'.{os.getpid()}.tmp')  # concurrent processes share the dir
+    tmp.write_text(text)
+    tmp.replace(path)
+
+
+def link_user_pi_files():
+    """Use the user's own Pi models and logins (models.json, auth.json) through symlinks.
+
+    A file the user already keeps in the managed directory is left alone, apart
+    from the empty placeholder `pi install` writes.
+    """
+    for name in LINKED_PI_FILES:
+        src, dst = user_pi_dir() / name, AGENT_DIR / name
+        if dst.is_symlink() and not dst.exists():
+            dst.unlink()  # dangling link
+        if dst.exists() and not dst.is_symlink() and dst.read_text().strip() in ('', '{}'):
+            dst.unlink()
+        if src.exists() and not dst.exists() and not dst.is_symlink():
+            dst.symlink_to(src)
+
+
+def configure(reducer=None):
+    AGENT_DIR.mkdir(parents=True, exist_ok=True)
+    write_json(AGENT_DIR / 'sol-pi.json', sol_pi_config(reducer or configured_reducer()))
+    settings_path = AGENT_DIR / 'settings.json'
+    settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
+    settings.update(quietStartup=True, defaultProjectTrust='never')
+    # SoL-Pi must not see the hand-off skill itself, or `$sol-pi` in the exported
+    # context would make it delegate to another SoL-Pi run.
+    own_skill = '-' + str(Path.home() / '.agents' / 'skills' / 'sol-pi')
+    settings['skills'] = [s for s in settings.get('skills', []) if s != own_skill] + [own_skill]
+    # Exactly one SoL-Pi source: drop registrations of other SoL-Pi checkouts (a
+    # second copy would register every mechanism twice); `setup` adds SRC back.
+    settings['packages'] = [p for p in settings.get('packages', [])
+                            if not is_other_sol_pi(p)]
+    write_json(settings_path, settings)
+    link_user_pi_files()
+
+
+def is_other_sol_pi(package):
+    if not isinstance(package, str) or ':' in package.split('/')[0]:
+        return False  # npm:/git: sources and object entries are left alone
+    path = (AGENT_DIR / package).resolve() if not os.path.isabs(package) else Path(package).resolve()
+    try:
+        name = json.loads((path / 'package.json').read_text()).get('name')
+    except (OSError, ValueError):
+        return False
+    return name == 'sol-pi' and path != SRC
+
+
+# ---------------------------------------------------------------- setup / doctor
+
+def cmd_setup(args):
+    if shutil.which('node') is None or shutil.which('npm') is None:
+        die('Node.js 22.19+ and npm are required')
+    if PI_VERSION is None:
+        die(f'cannot read the pinned Pi version from {SRC}/package.json (set SOL_PI_SRC to a SoL-Pi checkout)')
+    if not PI_BIN.exists():
+        print(f'Installing Pi {PI_VERSION} into {PI_PREFIX} ...', file=sys.stderr)
+        PI_PREFIX.mkdir(parents=True, exist_ok=True)
+        r = sh(['npm', 'install', '--prefix', str(PI_PREFIX), '--ignore-scripts', '--no-audit', '--no-fund',
+                f'@earendil-works/pi-coding-agent@{PI_VERSION}'])
+        if r.returncode:
+            die('npm install failed:\n' + r.stderr[-2000:])
+    # Checks run in the SoL-Pi checkout itself (agents-install.md, phase 1). An
+    # existing node_modules is kept: `npm ci` would delete and reinstall it.
+    if not (SRC / 'node_modules').exists():
+        r = sh(['npm', 'ci', '--ignore-scripts', '--no-audit', '--no-fund'], cwd=SRC)
+        if r.returncode:
+            die('npm ci in SoL-Pi failed:\n' + r.stderr[-2000:])
+    if not args.skip_tests:
+        print('Running SoL-Pi checks (npm run check) ...', file=sys.stderr)
+        r = sh(['npm', 'run', 'check'], cwd=SRC)
+        if r.returncode:
+            die('SoL-Pi checks failed:\n' + (r.stdout + r.stderr)[-3000:])
+        for cmd in (['node', 'scripts/check-pi-compat.mjs'], ['npx', 'vitest', 'run', 'tests/all-mechanisms.test.ts']):
+            r = sh(cmd, cwd=SRC)
+            if r.returncode:
+                die(' '.join(cmd) + ' failed:\n' + (r.stdout + r.stderr)[-3000:])
+    configure(args.reducer)
+    managed = pi_env({'PI_CODING_AGENT_DIR': str(AGENT_DIR)})
+    listed = sh([str(PI_BIN), 'list', '--approve'], env=managed, cwd=str(HOME))
+    if str(SRC) not in listed.stdout:
+        r = sh([str(PI_BIN), 'install', str(SRC), '--approve'], env=managed, cwd=str(HOME))
+        if r.returncode:
+            die('pi install failed:\n' + r.stderr)
+    return cmd_doctor(argparse.Namespace(live=False, json=args.json, quiet=False))
+
+
+def probe(cwd, reducer_route, model_route):
+    env = pi_env({'SOL_PI_PROBE_REDUCER': reducer_route or '', 'SOL_PI_PROBE_MODEL': model_route or ''})
+    r = sh([str(PI_BIN), '--offline', '--no-session', '--no-approve', '-e', str(PROBE),
+            '--mode', 'json', '--print', '/sol-pi-probe'], env=env, cwd=cwd, stdin=subprocess.DEVNULL, timeout=120)
+    # JSON mode reserves stdout for events and redirects extension writes to stderr.
+    for line in (r.stdout + '\n' + r.stderr).splitlines():
+        if line.startswith('SOL_PI_PROBE '):
+            return json.loads(line[len('SOL_PI_PROBE '):]), r
+    return None, r
+
+
+def effective_reducer(config_check_stdout):
+    """provider/model the reducer will use, from check-sol-pi-config.mjs output (defaults applied)."""
+    try:
+        config = json.loads(config_check_stdout)['effective_config']
+    except (ValueError, KeyError, TypeError):
+        return None
+    return f"{config['evidencePreservingReducerProvider']}/{config['evidencePreservingReducerModel']}"
+
+
+def cmd_doctor(args):
+    checks, ok = [], True
+
+    def check(name, passed, detail=''):
+        nonlocal ok
+        ok &= bool(passed)
+        checks.append({'check': name, 'ok': bool(passed), 'detail': detail})
+
+    agent_dir, run_root = runtime_dirs()
+    checks.append({'check': 'runtime dir', 'ok': True,
+                   'detail': str(agent_dir) + ('' if agent_dir == AGENT_DIR else ' (sandboxed host: temp copy of ' + str(AGENT_DIR) + ')')})
+    check('pi binary', PI_BIN.exists(), str(PI_BIN))
+    if PI_BIN.exists():
+        v = sh([str(PI_BIN), '--version']).stdout.strip()
+        check('pi version', v == PI_VERSION, v)
+    head = ''
+    if (SRC / 'COMMIT').exists():
+        head = (SRC / 'COMMIT').read_text().strip()[:7]  # recorded when bundled without .git
+    elif (SRC / '.git').exists() and shutil.which('git'):
+        head = sh(['git', '-C', str(SRC), 'rev-parse', '--short', 'HEAD']).stdout.strip()
+        if sh(['git', '-C', str(SRC), 'status', '--porcelain', '--untracked-files=no']).stdout.strip():
+            head += ' (dirty)'
+    check('SoL-Pi checkout', (SRC / 'src' / 'sol-pi' / 'index.ts').exists(), f'{SRC} @ {head or "unknown commit"}')
+    linked = [n for n in LINKED_PI_FILES if (agent_dir / n).exists()]
+    checks.append({'check': 'user Pi config', 'ok': True,
+                   'detail': f"{user_pi_dir()}: " + (', '.join(linked) + ' in use' if linked else 'no models.json or auth.json (built-in models only, no logins)')})
+    config_path = AGENT_DIR / 'sol-pi.json'
+    r = sh(['node', str(SRC / 'scripts' / 'check-sol-pi-config.mjs'), '--config', str(config_path), '--require-all-enabled'])
+    check('sol-pi.json all four mechanisms', r.returncode == 0, str(config_path) if r.returncode == 0 else (r.stdout + r.stderr).strip()[-400:])
+    reducer = effective_reducer(r.stdout)
+    model = resolve_route(None)
+    if PI_BIN.exists():
+        report, raw = probe(str(runs_dir().parent), reducer, model)
+        if report is None:
+            check('extension load', False, (raw.stderr or raw.stdout).strip()[-600:])
+        else:
+            missing = SOL_PI_TOOLS - set(report['solPiTools'])
+            check('Action Fusion / ObservationPack / Online Context Compact tools', not missing,
+                  'registered: ' + ', '.join(sorted(report['solPiTools'])) + (f'; missing: {sorted(missing)}' if missing else ''))
+            check('hand-off skill hidden from SoL-Pi', 'skill:sol-pi' not in report.get('skills', []),
+                  'SoL-Pi cannot re-delegate to itself' if 'skill:sol-pi' not in report.get('skills', []) else 'skill:sol-pi is visible; rerun setup')
+            if model:
+                found = report.get('model') or {}
+                check('default model', found.get('registered') and found.get('authConfigured'),
+                      f"{model} registered={found.get('registered')} credentials={found.get('authConfigured')}")
+            else:
+                available = report.get('available') or []
+                check('default model', bool(available),
+                      f'none set; Pi will pick from {len(available)} available models' if available
+                      else 'no model has credentials; log in or add one in your own Pi first')
+            red = report.get('reducer') or {}
+            check('Evidence-Preserving Reducer model', red.get('registered') and red.get('authConfigured'),
+                  f"{reducer} registered={red.get('registered')} credentials={red.get('authConfigured')}")
+    if args.live and ok:
+        res = run_task(argparse.Namespace(model=None, thinking='low', cwd=str(runs_dir().parent), timeout=300, run_id=None,
+                                          extra=[], no_context_files=True),
+                       'Reply with exactly SOL_PI_READY. Do not use tools.')
+        check('live model call', 'SOL_PI_READY' in (res.get('final') or ''),
+              f"{res.get('model')} status={res.get('status')} cost=${res.get('cost_usd')}")
+    if args.json:
+        print(json.dumps({'ok': ok, 'checks': checks}, indent=2))
+    else:
+        for c in checks:
+            print(f"[{'ok' if c['ok'] else 'FAIL'}] {c['check']}: {c['detail']}")
+        if not ok:
+            print('\nFix: run `sol-pi-run setup`; set up models and logins in your own Pi '
+                  '(`pi`, then /login or models.json); `--reducer provider/model` changes the reducer.')
+    return 0 if ok else 1
+
+
+def cmd_models(args):
+    configure_if_missing()
+    agent_dir = runtime_dirs()[0]
+    r = sh(['node', str(SRC / 'scripts' / 'check-sol-pi-config.mjs'), '--config', str(agent_dir / 'sol-pi.json')])
+    print(f"default model: {resolve_route(None) or '(none set; Pi picks the first available)'}")
+    print(f"reducer:       {effective_reducer(r.stdout) or '(unknown; run sol-pi-run doctor)'}")
+    print()
+    cmd = [str(PI_BIN), '--offline', '--list-models'] + ([args.search] if args.search else [])
+    return subprocess.call(cmd, env=pi_env(), cwd=str(runs_dir().parent), stdin=subprocess.DEVNULL)
+
+
+# ---------------------------------------------------------------- running tasks
+
+def summarize(events_path, session_path, started, run_id, cwd, route, rc):
+    usage = {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0}
+    cost = 0.0
+    final, stop, error, turns = '', None, None, 0
+    tools, mech = {}, {'action_fusion_then_run': 0, 'obs_recall': 0, 'update_plan': 0,
+                       'reducer_applied': 0, 'reducer_fallback': 0, 'compactions': 0}
+    reducer_usage = {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0}
+    reducer_cost = 0.0
+    reducer_prices = None  # recorded by the helper extension at session start
+    for line in events_path.read_text(errors='replace').splitlines() if events_path.exists() else []:
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        t = ev.get('type')
+        if t == 'message_end':
+            msg = ev.get('message') or {}
+            if msg.get('role') == 'assistant':
+                turns += 1
+                u = msg.get('usage') or {}
+                for k in usage:
+                    usage[k] += u.get(k, 0) or 0
+                cost += ((u.get('cost') or {}).get('total') or 0)
+                stop = msg.get('stopReason')
+                error = msg.get('errorMessage') or error
+                text = ''.join(c.get('text', '') for c in msg.get('content', []) if c.get('type') == 'text')
+                if text.strip():
+                    final = text
+        elif t == 'tool_execution_start':
+            name = ev.get('toolName')
+            tools[name] = tools.get(name, 0) + 1
+            if name in ('edit', 'write') and (ev.get('args') or {}).get('then_run'):
+                mech['action_fusion_then_run'] += 1
+            if name in ('obs_recall', 'update_plan'):
+                mech[name] += 1
+        elif t == 'compaction_end':
+            mech['compactions'] += 1
+    for line in session_path.read_text(errors='replace').splitlines() if session_path and session_path.exists() else []:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if entry.get('type') == 'custom' and entry.get('customType') == 'sol-pi-skill-reducer-price':
+            reducer_prices = (entry.get('data') or {}).get('cost')
+        elif entry.get('type') == 'custom' and entry.get('customType') == 'sol-pi-evidence-preserving-reducer-v1':
+            data = entry.get('data') or {}
+            if data.get('kind') == 'applied':
+                mech['reducer_applied'] += 1
+            elif data.get('kind') == 'fallback':
+                mech['reducer_fallback'] += 1
+            if data.get('kind') == 'provider_response':
+                u = data.get('usage') or {}
+                for k in reducer_usage:
+                    reducer_usage[k] += u.get(k, 0) or 0
+                # Pi's session totals exclude nested reducer calls; price them here.
+                reducer_cost += price(reducer_prices, u)
+        elif entry.get('type') == 'compaction' and entry.get('usage'):
+            u = entry['usage']
+            for k in usage:
+                usage[k] += u.get(k, 0) or 0
+            cost += ((u.get('cost') or {}).get('total') or 0)
+    status = 'done' if rc == 0 and stop not in ('error', 'aborted') else ('timeout' if rc == -9 else 'failed')
+    return {
+        'run_id': run_id, 'status': status, 'exit_code': rc, 'stop_reason': stop, 'error': error,
+        'model': route, 'cwd': cwd, 'seconds': round(time.time() - started, 1), 'turns': turns,
+        'tokens': {**usage, 'total': sum(usage.values())}, 'cost_usd': round(cost + reducer_cost, 4),
+        'main_cost_usd': round(cost, 4), 'reducer_cost_usd': round(reducer_cost, 4),
+        'reducer_tokens': reducer_usage, 'tool_calls': tools, 'sol_pi': mech,
+        'session_file': str(session_path) if session_path else None,
+        'events_file': str(events_path), 'final': final,
+    }
+
+
+def refuse_nested():
+    if os.environ.get('SOL_PI_DEPTH'):
+        die('already running inside SoL-Pi; do the task directly instead of delegating again')
+
+
+def run_task(args, task):
+    configure_if_missing()
+    route = resolve_route(args.model)
+    run_id = args.run_id or dt.datetime.now().strftime('%Y%m%d-%H%M%S-') + uuid.uuid4().hex[:6]
+    run_dir = runs_dir() / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    cwd = str(Path(args.cwd or os.getcwd()).resolve())
+    session_dir = run_dir / 'session'
+    session_id = str(uuid.uuid4())
+    cmd = [str(PI_BIN)] + (['--model', route] if route else []) + [
+        '--thinking', args.thinking, '--session-dir', str(session_dir), '--session-id', session_id,
+        '--no-approve', '-e', str(PROBE), '--mode', 'json']
+    if getattr(args, 'no_context_files', False):
+        cmd.append('--no-context-files')
+    cmd += list(args.extra or [])
+    cmd += ['--print', task]
+    (run_dir / 'prompt.md').write_text(task)
+    write_json(run_dir / 'run.json', {'run_id': run_id, 'cwd': cwd, 'model': route, 'thinking': args.thinking,
+                                      'session_id': session_id, 'pid': os.getpid(), 'started': time.time(),
+                                      'task': task[-2000:], 'prompt_chars': len(task), 'cmd': cmd[:-1]})
+    events_path, stderr_path = run_dir / 'events.jsonl', run_dir / 'stderr.log'
+    started = time.time()
+    with open(events_path, 'w') as out, open(stderr_path, 'w') as err:
+        reducer = effective_reducer(sh(['node', str(SRC / 'scripts' / 'check-sol-pi-config.mjs'), '--config',
+                                        str(runtime_dirs()[0] / 'sol-pi.json')]).stdout)
+        proc = subprocess.Popen(cmd, cwd=cwd, env=pi_env({'SOL_PI_REDUCER_ROUTE': reducer or ''}), stdout=out, stderr=err,
+                                stdin=subprocess.DEVNULL, start_new_session=True)
+        try:
+            rc = proc.wait(timeout=args.timeout or None)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGTERM)
+            try:
+                proc.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+            rc = -9
+    sessions = sorted(session_dir.glob('*.jsonl'))
+    result = summarize(events_path, sessions[-1] if sessions else None, started, run_id, cwd,
+                       route or used_model(events_path), rc)
+    if result['status'] == 'failed' and not result['error']:
+        result['error'] = stderr_path.read_text(errors='replace').strip()[-1500:] or None
+    write_json(run_dir / 'result.json', result)
+    return result
+
+
+def used_model(events_path):
+    """provider/model of the first assistant message, when Pi chose the model itself."""
+    for line in events_path.read_text(errors='replace').splitlines() if events_path.exists() else []:
+        if '"message_end"' not in line:
+            continue
+        try:
+            msg = json.loads(line).get('message') or {}
+        except ValueError:
+            continue
+        if msg.get('role') == 'assistant' and msg.get('provider'):
+            return f"{msg['provider']}/{msg.get('model')}"
+    return None
+
+
+def configure_if_missing():
+    if not PI_BIN.exists() or not SRC.exists():
+        die('SoL-Pi is not installed; run `sol-pi-run setup` first')
+    if not (AGENT_DIR / 'sol-pi.json').exists():
+        configure()
+    else:
+        link_user_pi_files()
+
+
+def read_task(args):
+    task = ' '.join(args.task).strip()
+    if args.task_file:
+        task = (Path(args.task_file).read_text() + ('\n\n' + task if task else '')).strip()
+    if task == '-' or (not task and not sys.stdin.isatty()):
+        task = sys.stdin.read().strip()
+    if not task:
+        die('no task given')
+    if getattr(args, 'with_session', False):
+        task = session_prefix(args) + task
+    return task
+
+
+def session_prefix(args):
+    """Export the calling Claude Code / Codex session (see sol-pi-context) as prefix context."""
+    cmd = [sys.executable, str(Path(__file__).resolve().parent / 'sol-pi-context'),
+           '--max-chars', str(args.session_chars)]
+    if args.session_from:
+        cmd += ['--transcript' if os.path.exists(args.session_from) else '--session', args.session_from]
+    r = sh(cmd)
+    if r.returncode:
+        die('could not export the host session: ' + r.stderr.strip())
+    return r.stdout
+
+
+def print_result(result, as_json):
+    if as_json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return
+    t = result['tokens']
+    m = result['sol_pi']
+    print(f"[sol-pi] {result['status']} · {result['model']} · {result['seconds']}s · {result['turns']} turns · "
+          f"${result['cost_usd']} (reducer ${result.get('reducer_cost_usd', 0)}) · tokens in={t['input']} cache_read={t['cacheRead']} cache_write={t['cacheWrite']} out={t['output']}")
+    print(f"[sol-pi] then_run={m['action_fusion_then_run']} obs_recall={m['obs_recall']} update_plan={m['update_plan']} "
+          f"reducer_applied={m['reducer_applied']} reducer_fallback={m['reducer_fallback']} compactions={m['compactions']}")
+    print(f"[sol-pi] run={result['run_id']} session={result['session_file']}")
+    if result.get('error'):
+        print(f"[sol-pi] error: {result['error']}")
+    print()
+    print(result['final'] or '(no final text)')
+
+
+def cmd_run(args):
+    if not args.run_id:  # `start` re-enters `run` with --run-id from outside SoL-Pi
+        refuse_nested()
+    result = run_task(args, read_task(args))
+    print_result(result, args.json)
+    return 0 if result['status'] == 'done' else 1
+
+
+def cmd_start(args):
+    refuse_nested()
+    task = read_task(args)
+    run_id = dt.datetime.now().strftime('%Y%m%d-%H%M%S-') + uuid.uuid4().hex[:6]
+    run_dir = runs_dir() / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / 'task.txt').write_text(task)
+    cmd = [sys.executable, os.path.abspath(__file__), 'run', '--run-id', run_id, '--model', args.model,
+           '--thinking', args.thinking, '--cwd', str(Path(args.cwd or os.getcwd()).resolve()),
+           '--timeout', str(args.timeout), '--json', '--task-file', str(run_dir / 'task.txt')]
+    if args.no_context_files:
+        cmd.append('--no-context-files')
+    if args.extra:
+        cmd += ['--pi-arg=' + a for a in args.extra]
+    with open(run_dir / 'launcher.log', 'w') as log:
+        proc = subprocess.Popen(cmd, stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
+    write_json(run_dir / 'launcher.json', {'pid': proc.pid, 'started': time.time()})
+    print(run_id)
+    return 0
+
+
+def run_state(run_id):
+    run_dir = find_run(run_id)
+    if (run_dir / 'result.json').exists():
+        return json.loads((run_dir / 'result.json').read_text())
+    meta = json.loads((run_dir / 'run.json').read_text()) if (run_dir / 'run.json').exists() else {}
+    launcher = json.loads((run_dir / 'launcher.json').read_text()) if (run_dir / 'launcher.json').exists() else {}
+    alive = False
+    for pid in {meta.get('pid'), launcher.get('pid')} - {None}:
+        try:
+            os.kill(pid, 0)
+            alive = True
+        except PermissionError:
+            alive = True  # exists, but a sandbox (Codex seatbelt) forbids signalling it
+        except OSError:
+            pass
+    events = run_dir / 'events.jsonl'
+    if not alive and events.exists() and time.time() - events.stat().st_mtime < 60:
+        alive = True  # process check unavailable, but the run is still writing events
+    if not alive and (run_dir / 'result.json').exists():  # finished between the two checks
+        return json.loads((run_dir / 'result.json').read_text())
+    partial = summarize(events, None, meta.get('started', time.time()), run_id, meta.get('cwd'), meta.get('model'), 0)
+    last_tool = None
+    if events.exists():
+        for line in events.read_text(errors='replace').splitlines()[-200:]:
+            if '"tool_execution_start"' in line:
+                try:
+                    last_tool = json.loads(line).get('toolName')
+                except ValueError:
+                    pass
+    state = {'run_id': run_id, 'status': 'running' if alive else 'lost', 'model': meta.get('model'),
+             'seconds': partial['seconds'], 'turns': partial['turns'], 'cost_usd': partial['cost_usd'],
+             'last_tool': last_tool, 'events_file': str(events)}
+    if not alive and (run_dir / 'launcher.log').exists():
+        state['error'] = (run_dir / 'launcher.log').read_text(errors='replace').strip()[-1500:] or None
+    return state
+
+
+def cmd_status(args):
+    state = run_state(args.run_id)
+    if args.json or state.get('status') in ('running', 'lost'):
+        print(json.dumps({k: v for k, v in state.items() if k != 'final'}, indent=2))
+    else:
+        print_result(state, False)
+    return 0
+
+
+def cmd_wait(args):
+    deadline = time.time() + args.timeout if args.timeout else None
+    while True:
+        state = run_state(args.run_id)
+        if state['status'] not in ('running',):
+            print_result(state, args.json) if 'final' in state else print(json.dumps(state, indent=2))
+            return 0 if state['status'] == 'done' else 1
+        if deadline and time.time() > deadline:
+            print(json.dumps(state, indent=2))
+            return 3
+        time.sleep(5)
+
+
+def cmd_result(args):
+    state = run_state(args.run_id)
+    if 'final' not in state:
+        die(f"run {args.run_id} is {state['status']}", 3)
+    print_result(state, args.json)
+    return 0
+
+
+def cmd_list(args):
+    for run_dir in sorted(runs_dir().glob('*'))[-args.limit:]:
+        s = run_state(run_dir.name)
+        print(f"{run_dir.name}  {s['status']:8s} {s.get('model')}  ${s.get('cost_usd')}  {s.get('seconds')}s")
+    return 0
+
+
+def cmd_tui(args):
+    configure_if_missing()
+    route = resolve_route(args.model)
+    rest = args.rest[1:] if args.rest[:1] == ['--'] else args.rest
+    model_args = ['--model', route] if route else []
+    thinking_args = ['--thinking', args.thinking] if args.thinking else []
+    os.execve(str(PI_BIN), [str(PI_BIN), *model_args, *thinking_args, *rest], pi_env())
+
+
+# ---------------------------------------------------------------- host hooks
+#
+# `hook submit` runs as a synchronous prompt hook: it recognises a hand-off
+# (Claude Code `/sol-pi ...` via UserPromptExpansion, Codex `$sol-pi ...` via
+# UserPromptSubmit), starts SoL-Pi in the background with the session as prefix
+# context, and blocks the prompt so the host model never processes it.
+# `hook notify` runs as a background hook on the same event: it waits for that
+# run and reports it back (Claude Code asyncRewake: stderr + exit 2 wakes the
+# session; Codex async: additionalContext on the next turn).
+
+HANDOFF_PREFIX = re.compile(r'^\s*(?:/sol-pi(?::sol-pi)?|\$sol-pi)(?:\s+|$)')
+NOTIFY_WAIT_FOR_START = 120   # seconds `notify` waits for `submit` to record the run id
+REPORT_ANSWER_CHARS = 4000
+
+
+def hook_input():
+    try:
+        return json.loads(sys.stdin.read() or '{}')
+    except ValueError:
+        return {}
+
+
+def hook_request(event):
+    """(host, task text) when the event is a SoL-Pi hand-off, else None."""
+    name = event.get('hook_event_name')
+    if name == 'UserPromptExpansion':
+        if event.get('command_name') in ('sol-pi', 'sol-pi:sol-pi'):
+            return 'claude', (event.get('command_args') or '').strip()
+        return None
+    if name == 'UserPromptSubmit':
+        prompt = event.get('prompt') or ''
+        if HANDOFF_PREFIX.match(prompt):
+            host = 'codex' if event.get('turn_id') or os.environ.get('CODEX_THREAD_ID') else 'claude'
+            return host, HANDOFF_PREFIX.sub('', prompt, count=1).strip()
+    return None
+
+
+def split_options(text):
+    """Leading `-m <model>` / `-t <effort>` are options; the rest is the task, verbatim."""
+    model, thinking = 'default', 'high'
+    while True:
+        m = re.match(r'^(-m|--model|-t|--thinking)\s+(\S+)\s*', text)
+        if not m:
+            return model, thinking, text
+        if m.group(1) in ('-m', '--model'):
+            model = m.group(2)
+        else:
+            thinking = m.group(2)
+        text = text[m.end():]
+
+
+def hook_key(event):
+    # SOL_PI_HOOK_KEY lets a driver that runs submit and notify separately (an
+    # evaluation harness, a script) name the hand-off itself.
+    key = (os.environ.get('SOL_PI_HOOK_KEY') or event.get('prompt_id') or event.get('turn_id')
+           or event.get('session_id') or 'unknown')
+    return re.sub(r'[^A-Za-z0-9._-]', '_', str(key))
+
+
+def hook_record(event):
+    return HOME / 'hook-runs' / f'{hook_key(event)}.json'
+
+
+def hook_reply(host, event_name, message, block=True):
+    out = {'reason': message}
+    if block:
+        out['decision'] = 'block'
+    if host == 'claude':
+        out['hookSpecificOutput'] = {'hookEventName': event_name, 'suppressOriginalPrompt': False}
+    print(json.dumps(out))
+
+
+def cmd_hook_submit(args):
+    event = hook_input()
+    request = hook_request(event)
+    if request is None:
+        return 0  # not a hand-off: let the prompt through untouched
+    host, text = request
+    name = event.get('hook_event_name')
+    model, thinking, task = split_options(text)
+    if not task:
+        hook_reply(host, name, 'SoL-Pi: no task given. Usage: /sol-pi [-m model] [-t effort] <task>')
+        return 0
+    cwd = event.get('cwd') or os.getcwd()
+    transcript = event.get('transcript_path')
+    task_file = HOME / 'hook-runs' / f'{hook_key(event)}.task.md'
+    task_file.parent.mkdir(parents=True, exist_ok=True)
+    task_file.write_text(task)
+    cmd = [sys.executable, os.path.abspath(__file__), 'start', '-m', model, '-t', thinking,
+           '--cwd', cwd, '--task-file', str(task_file)]
+    if transcript and os.path.exists(transcript):
+        cmd += ['--with-session', '--session-from', transcript]
+    env = dict(os.environ)
+    if host == 'codex':
+        env.setdefault('CODEX_THREAD_ID', str(event.get('session_id') or ''))
+    r = sh(cmd, cwd=cwd, env=env)
+    run_id = r.stdout.strip().splitlines()[-1] if r.returncode == 0 and r.stdout.strip() else None
+    write_json(hook_record(event), {'run_id': run_id, 'host': host, 'cwd': cwd, 'model': model,
+                                    'started': time.time(), 'error': None if run_id else (r.stderr or r.stdout)[-1500:]})
+    if run_id:
+        hook_reply(host, name, f'Handed to SoL-Pi (model {resolve_route(model) or "Pi default"}, run {run_id}). '
+                               f'The result will be reported here when it finishes; `sol-pi-run status {run_id}` shows progress.')
+    else:
+        hook_reply(host, name, 'SoL-Pi could not start: ' + ((r.stderr or r.stdout).strip()[-600:] or 'unknown error'))
+    return 0
+
+
+def git_changes(cwd):
+    if not shutil.which('git'):
+        return ''
+    if sh(['git', '-C', cwd, 'rev-parse', '--is-inside-work-tree']).returncode:
+        return ''
+    status = sh(['git', '-C', cwd, 'status', '--short']).stdout.strip()
+    stat = sh(['git', '-C', cwd, 'diff', '--stat']).stdout.strip()
+    return '\n'.join(x for x in (status, stat) if x)
+
+
+def hook_report(record, state):
+    t = state.get('tokens') or {}
+    lines = [
+        'SoL-Pi finished the task the user handed off with /sol-pi (you did not run it; SoL-Pi did, '
+        'in this working directory). Check the changes below before relying on them, then tell the user '
+        'what SoL-Pi did, whether it verified the result, and the cost line.',
+        '',
+        f"[sol-pi] {state.get('status')} · {state.get('model')} · {state.get('seconds')}s · {state.get('turns')} turns · "
+        f"${state.get('cost_usd')} (reducer ${state.get('reducer_cost_usd', 0)}) · tokens in={t.get('input')} "
+        f"cache_read={t.get('cacheRead')} cache_write={t.get('cacheWrite')} out={t.get('output')}",
+        f"[sol-pi] run={state.get('run_id')} session={state.get('session_file')}",
+    ]
+    if state.get('error'):
+        lines.append(f"[sol-pi] error: {str(state['error'])[-800:]}")
+    changes = git_changes(record.get('cwd') or os.getcwd())
+    if changes:
+        lines += ['', 'Working tree after the run:', changes[-2000:]]
+    answer = (state.get('final') or '(no final text)').strip()
+    if len(answer) > REPORT_ANSWER_CHARS:
+        answer = answer[:REPORT_ANSWER_CHARS] + f'\n[... truncated; full answer: sol-pi-run result {state.get("run_id")}]'
+    lines += ['', "SoL-Pi's final answer:", answer]
+    return '\n'.join(lines)
+
+
+def cmd_hook_notify(args):
+    event = hook_input()
+    request = hook_request(event)
+    if request is None:
+        return 0
+    host = request[0]
+    record_path = hook_record(event)
+    deadline = time.time() + NOTIFY_WAIT_FOR_START
+    while not record_path.exists() and time.time() < deadline:
+        time.sleep(1)
+    if not record_path.exists():
+        return 0  # submit never ran (or the prompt was not a hand-off): nothing to report
+    record = json.loads(record_path.read_text())
+    if not record.get('run_id'):
+        return 0  # submit already told the user it failed
+    while True:
+        state = run_state(record['run_id'])
+        if state.get('status') not in ('running',):
+            break
+        time.sleep(5)
+    report = hook_report(record, state)
+    if host == 'claude':
+        print(report, file=sys.stderr)
+        return 2  # asyncRewake: exit 2 wakes the session with stderr as a system reminder
+    print(json.dumps({'hookSpecificOutput': {'hookEventName': event.get('hook_event_name'),
+                                             'additionalContext': report}}))
+    return 0
+
+
+def main():
+    p = argparse.ArgumentParser(prog='sol-pi-run', description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest='cmd', required=True)
+
+    s = sub.add_parser('setup', help='install pinned Pi + SoL-Pi and write the all-enabled config')
+    s.add_argument('--reducer', help="reducer model as provider/model (default: keep the current one, else SoL-Pi's built-in)")
+    s.add_argument('--skip-tests', action='store_true')
+    s.add_argument('--json', action='store_true')
+    s.set_defaults(fn=cmd_setup)
+
+    s = sub.add_parser('doctor', help='verify the installation without running a task')
+    s.add_argument('--live', action='store_true', help='also make one tiny model call')
+    s.add_argument('--json', action='store_true')
+    s.set_defaults(fn=cmd_doctor)
+
+    s = sub.add_parser('models', help='show the default model, the reducer and the models Pi can use')
+    s.add_argument('search', nargs='?')
+    s.set_defaults(fn=cmd_models)
+
+    s = sub.add_parser('configure', help='write sol-pi.json / settings.json and link your Pi files (no install, no tests)')
+    s.add_argument('--reducer', help='reducer model as provider/model')
+    s.set_defaults(fn=lambda a: configure(a.reducer) or 0)
+
+    for name, fn in (('run', cmd_run), ('start', cmd_start)):
+        s = sub.add_parser(name, help='run a task' if name == 'run' else 'run a task in the background')
+        s.add_argument('--model', '-m', default='default',
+                       help='provider/model as in `pi --list-models` (default: your Pi default model)')
+        s.add_argument('--thinking', '-t', default='high', choices=['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+        s.add_argument('--cwd', help='working directory for the task (default: current directory)')
+        s.add_argument('--timeout', type=int, default=7200, help='seconds before the run is stopped (0 = none)')
+        s.add_argument('--task-file', help='read the task from a file')
+        s.add_argument('--no-context-files', action='store_true', help='do not load AGENTS.md / CLAUDE.md')
+        s.add_argument('--with-session', action='store_true',
+                       help='prefix the task with the calling Claude Code / Codex conversation')
+        s.add_argument('--session-from', help='session id or transcript path (default: the calling session)')
+        s.add_argument('--session-chars', type=int, default=200_000, help='budget for the exported conversation')
+        s.add_argument('--pi-arg', dest='extra', action='append', default=[], help='extra argument passed to pi')
+        s.add_argument('--json', action='store_true')
+        if name == 'run':
+            s.add_argument('--run-id', help=argparse.SUPPRESS)
+        s.add_argument('task', nargs='*')
+        s.set_defaults(fn=fn)
+
+    for name, fn in (('status', cmd_status), ('wait', cmd_wait), ('result', cmd_result)):
+        s = sub.add_parser(name)
+        s.add_argument('run_id')
+        s.add_argument('--json', action='store_true')
+        if name == 'wait':
+            s.add_argument('--timeout', type=int, default=0)
+        s.set_defaults(fn=fn)
+
+    s = sub.add_parser('list', help='list recent runs')
+    s.add_argument('--limit', type=int, default=10)
+    s.set_defaults(fn=cmd_list)
+
+    s = sub.add_parser('hook', help='host hook entry point (reads the hook event JSON on stdin)')
+    s.add_argument('phase', choices=['submit', 'notify'])
+    s.set_defaults(fn=lambda a: cmd_hook_submit(a) if a.phase == 'submit' else cmd_hook_notify(a))
+
+    s = sub.add_parser('tui', help='open the SoL-Pi terminal UI')
+    s.add_argument('--model', '-m', default='default')
+    s.add_argument('--thinking', '-t')
+    s.add_argument('rest', nargs=argparse.REMAINDER)
+    s.set_defaults(fn=cmd_tui)
+
+    args = p.parse_args()
+    sys.exit(args.fn(args) or 0)
+
+
+if __name__ == '__main__':
+    main()
