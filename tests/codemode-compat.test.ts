@@ -69,15 +69,16 @@ const FAILURE_LINE = "ERROR tests/test_widget.py::test_render - AssertionError: 
 const BIG_LINE = "observation payload ".repeat(4);
 const BIG_LINES = 160;
 
-/** A diagnostic-looking command (matches the reducer's DIAGNOSTIC_COMMAND) with a long, real output. */
+/** An invoked diagnostic shell fixture with long, real output and a controlled exit status. */
 function diagnosticCommand(exitCode: number): string {
 	const failure = exitCode === 0 ? "" : `echo '${FAILURE_LINE}'; `;
 	return [
-		": pytest -q;",
+		"pytest() {",
 		"i=1; while [ $i -le 90 ]; do",
 		'echo "tests/test_widget.py::test_case_$i PASSED padding-padding-padding-padding";',
 		"i=$((i+1)); done;",
-		`${failure}echo '90 collected'; exit ${exitCode}`,
+		`${failure}echo '90 collected'; return ${exitCode};`,
+		"}; pytest -q",
 	].join(" ");
 }
 
