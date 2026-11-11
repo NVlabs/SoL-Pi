@@ -106,7 +106,7 @@ function validateConfig(value, requireAllEnabled) {
 function stringConfigValue(value, key, defaultValue) {
 	const configured = Object.hasOwn(value, key) ? value[key] : defaultValue;
 	if (typeof configured !== "string" || configured.trim().length === 0) fail(`${key} must be a non-empty string`);
-	return configured;
+	return configured.trim();
 }
 
 try {

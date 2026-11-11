@@ -1,0 +1,6 @@
+{
+  "name": "sol-pi",
+  "version": "0.1.0",
+  "description": "Hand the current prompt to SoL-Pi (Pi + all four SoL-Pi mechanisms), with this Claude Code session as prefix context",
+  "author": { "name": "NVlabs SoL-Pi" }
+}
