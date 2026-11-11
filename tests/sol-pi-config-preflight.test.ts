@@ -86,6 +86,22 @@ describe("SoL-Pi configuration preflight", () => {
 		});
 	});
 
+	it("normalizes surrounding whitespace in the reported EPR reducer route", () => {
+		const result = run(
+			writeConfig({
+				...ALL_ENABLED,
+				evidencePreservingReducerProvider: `  ${DEFAULT_EPR_PROVIDER}\t`,
+				evidencePreservingReducerModel: `\n${DEFAULT_EPR_MODEL}  `,
+			}),
+		);
+
+		expect(result.status).toBe(0);
+		expect(JSON.parse(result.stdout).effective_config).toMatchObject({
+			evidencePreservingReducerProvider: DEFAULT_EPR_PROVIDER,
+			evidencePreservingReducerModel: DEFAULT_EPR_MODEL,
+		});
+	});
+
 	it.each([null, "12.5", -1])("rejects an invalid ratio: %j", (cacheWriteReadRatio) => {
 		const result = run(writeConfig({ ...ALL_ENABLED, cacheWriteReadRatio }));
 		expect(result.status).toBe(1);
