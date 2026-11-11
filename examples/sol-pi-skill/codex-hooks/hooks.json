@@ -1,0 +1,21 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sol-pi-run hook submit",
+            "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "sol-pi-run hook notify",
+            "async": true,
+            "timeout": 7500
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -10,9 +10,16 @@
  * original bytes are archived by observation id outside the provider context,
  * and the agent pulls exact pages back with the registered `obs_recall` tool.
  *
- * The mechanism never edits history in place. It rewrites only at the
- * projection layer (`pi.on("context")`), so the stored session stays intact and
- * recall keeps working after native compaction or a session resume.
+ * The mechanism never edits stored history. It rewrites only at the projection
+ * layer (`pi.on("context")`), so the stored session stays intact and recall
+ * keeps working after native compaction or a session resume. Pi hands context
+ * handlers a structured clone of the conversation, and the placeholder replaces
+ * the content of that clone's message objects in place: since Pi 0.87 a handler
+ * that returns different message objects makes Pi collapse every
+ * mid-conversation system message (prompt and tool-declaration deltas) into one
+ * leading system message, which breaks the provider's cached prefix on every
+ * later request. Pi 0.84 sends the edited clone too, so the handler returns
+ * nothing on every version.
  *
  * Storage lives under the active Pi session directory.
  */
@@ -135,7 +142,6 @@ export function createObservationPackExtension(): ExtensionFactory {
 		});
 
 		pi.on("context", async (event, ctx: ExtensionContext) => {
-			const projected = [...event.messages];
 			const root = runtimeRoot(ctx);
 			// How many provider requests each message has already been part of,
 			// counted by the assistant messages that follow it.
@@ -197,7 +203,8 @@ export function createObservationPackExtension(): ExtensionFactory {
 							formatSavingsCount(removedTokens, "context tokens avoided"),
 						);
 					}
-					projected[index] = { ...message, content: [{ type: "text", text: placeholder }] };
+					// Same message object, new content: see the note at the top of this file.
+					message.content = [{ type: "text", text: placeholder }];
 					sentCounts.set(sendCountKey, previousSends + 1);
 				} catch (error) {
 					// Fail open: a packing failure must never cost the agent its observation.
@@ -205,8 +212,6 @@ export function createObservationPackExtension(): ExtensionFactory {
 					console.error(`[observationpack] fail-open for tool result: ${reason}`);
 				}
 			}
-
-			return { messages: projected };
 		});
 	};
 }
