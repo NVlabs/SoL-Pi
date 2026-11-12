@@ -55,7 +55,12 @@ const RECALL_LIMITS = {
 	maxLines: RECALL_MAX_LINES - RECALL_HEADER_LINES,
 };
 
-export function createObservationPackExtension(): ExtensionFactory {
+export interface ObservationPackOptions {
+	readonly scrub?: (text: string) => string;
+	readonly repairMismatch?: boolean;
+}
+
+export function createObservationPackExtension(options: ObservationPackOptions = {}): ExtensionFactory {
 	return (pi: ExtensionAPI) => {
 		const sentCounts = new Map<string, number>();
 		const ledgers = new Map<string, Ledger>();
@@ -159,9 +164,9 @@ export function createObservationPackExtension(): ExtensionFactory {
 				if (!message || !isPureTextResult(message)) continue;
 
 				try {
-					const observation = createObservation(message, root);
+					const observation = createObservation(message, root, options.scrub);
 					if (!observation) continue;
-					await ensureStored(observation);
+					await ensureStored(observation, { repairMismatch: options.repairMismatch === true });
 
 					const sendCountKey = `${root}\0${observation.id}`;
 					const previousSends = sentCounts.get(sendCountKey) ?? priorAssistantCounts[index] ?? 0;
@@ -225,8 +230,8 @@ export {
 	THRESHOLD_BYTES,
 } from "./observation.ts";
 
-export function registerObservationPack(pi: ExtensionAPI): void {
-	createObservationPackExtension()(pi);
+export function registerObservationPack(pi: ExtensionAPI, options: ObservationPackOptions = {}): void {
+	createObservationPackExtension(options)(pi);
 }
 
 export default registerObservationPack;

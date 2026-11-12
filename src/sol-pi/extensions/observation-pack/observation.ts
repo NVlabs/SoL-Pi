@@ -4,8 +4,9 @@
  */
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { type FileHandle, lstat, mkdir, open } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { atomicWrite } from "../../atomic.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { TextContent, ToolResultMessage } from "@earendil-works/pi-ai";
 
@@ -19,7 +20,6 @@ export const PLACEHOLDER_EXCERPT_BYTES = 1024;
 const CHARS_PER_TOKEN = 4;
 const OBSERVATION_ID_PATTERN = /^obs_[a-f0-9]{24}$/u;
 const READ_OBJECT_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW;
-const CREATE_OBJECT_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
 
 /**
  * Receipts from the evidence-preserving reducer are already a reduction of a
@@ -95,8 +95,15 @@ export function isObservationId(id: string): boolean {
 	return OBSERVATION_ID_PATTERN.test(id);
 }
 
-export function createObservation(message: ToolResultMessage, runtimeRoot: string): Observation | undefined {
-	const text = textFromResult(message);
+export function createObservation(
+	message: ToolResultMessage,
+	runtimeRoot: string,
+	scrub: (text: string) => string = (text) => text,
+): Observation | undefined {
+	// The store is a durable, repository-shared surface: scrub BEFORE hashing,
+	// so the object name, recall bytes, and receipt checks all describe the
+	// scrubbed payload.
+	const text = scrub(textFromResult(message));
 	if (containsReducerReceipt(text)) return undefined;
 	const bytes = Buffer.byteLength(text, "utf8");
 	if (bytes <= THRESHOLD_BYTES) return undefined;
@@ -120,38 +127,27 @@ export function createObservation(message: ToolResultMessage, runtimeRoot: strin
  * Write the payload to its content-addressed path, refusing symlinks and
  * verifying an existing object byte for byte before reusing it.
  */
-export async function ensureStored(observation: Observation): Promise<void> {
-	const directoryPath = dirname(observation.filePath);
-	await mkdir(directoryPath, { recursive: true, mode: 0o700 });
-	const directoryStats = await lstat(directoryPath);
-	if (!directoryStats.isDirectory() || directoryStats.isSymbolicLink()) {
-		throw new Error(`Observation directory is not a regular directory for ${observation.id}`);
-	}
-
-	let handle: FileHandle | undefined;
+export async function ensureStored(
+	observation: Observation,
+	options: { readonly repairMismatch?: boolean } = {},
+): Promise<void> {
 	try {
-		handle = await open(observation.filePath, CREATE_OBJECT_FLAGS, 0o600);
-		await handle.writeFile(observation.text, { encoding: "utf8" });
+		await atomicWrite(observation.filePath, observation.text, {
+			mode: 0o600,
+			expectedHash: observation.contentHash,
+			repairMismatch: options.repairMismatch === true,
+		});
 	} catch (error) {
-		if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
-		const existingHandle = await open(observation.filePath, READ_OBJECT_FLAGS);
-		try {
-			const existing = await existingHandle.stat();
-			if (!existing.isFile()) {
-				throw new Error(`Content-addressed observation is not a regular file for ${observation.id}`);
-			}
-			if (existing.size !== observation.bytes) {
-				throw new Error(`Content-addressed observation size mismatch for ${observation.id}`);
-			}
-			const existingContent = await existingHandle.readFile();
-			if (hash(existingContent) !== observation.contentHash) {
-				throw new Error(`Content-addressed observation hash mismatch for ${observation.id}`);
-			}
-		} finally {
-			await existingHandle.close();
+		// The documented failure contract names the observation and the cause
+		// (upstream tests pin both strings).
+		const message = error instanceof Error ? error.message : String(error);
+		if (message.includes("not a regular directory")) {
+			throw new Error(`Observation directory is not a regular directory for ${observation.id}`);
 		}
-	} finally {
-		await handle?.close();
+		if (message.includes("different payload")) {
+			throw new Error(`Content-addressed observation hash mismatch for ${observation.id}`);
+		}
+		throw error;
 	}
 }
 

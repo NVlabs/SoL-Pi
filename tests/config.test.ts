@@ -172,6 +172,66 @@ describe("SoL-Pi config", () => {
 		);
 	});
 
+	it("loads the redaction contract and store integrity policy", () => {
+		const { agentDir, cwd } = fixture();
+		const path = join(agentDir, "sol-pi.json");
+		writeFileSync(path, JSON.stringify({
+			version: 1,
+			observationPack: true,
+			redaction: { enabled: true, patterns: ["api_key=[^\\s]+"], replacement: "[redacted]" },
+			storeRepairMismatch: true,
+		}));
+		const config = loadSolPiConfig(cwd, agentDir, true);
+		expect(config.redaction).toEqual({
+			enabled: true,
+			patterns: ["api_key=[^\\s]+"],
+			replacement: "[redacted]",
+		});
+		expect(config.storeRepairMismatch).toBe(true);
+	});
+
+	it("keeps redaction disabled by default (byte-identity when off)", () => {
+		const { agentDir, cwd } = fixture();
+		expect(loadSolPiConfig(cwd, agentDir, true).redaction).toEqual({
+			enabled: false,
+			patterns: [],
+			replacement: "[redacted]",
+		});
+		expect(loadSolPiConfig(cwd, agentDir, true).storeRepairMismatch).toBe(false);
+	});
+
+	it.each([
+		["redaction", null],
+		["redaction", []],
+		["redaction", "text"],
+		["storeRepairMismatch", "true"],
+	] as const)("rejects a malformed redaction/integrity field: %s=%j", (key, value) => {
+		const { agentDir, cwd } = fixture();
+		const path = join(agentDir, "sol-pi.json");
+		writeFileSync(path, JSON.stringify({ version: 1, [key]: value }));
+		expect(() => loadSolPiConfig(cwd, agentDir, true)).toThrow();
+	});
+
+	it("rejects an invalid redaction pattern at load, not at the first capture", () => {
+		const { agentDir, cwd } = fixture();
+		const path = join(agentDir, "sol-pi.json");
+		writeFileSync(path, JSON.stringify({
+			version: 1,
+			redaction: { enabled: true, patterns: ["("], replacement: "[redacted]" },
+		}));
+		expect(() => loadSolPiConfig(cwd, agentDir, true)).toThrow(/invalid pattern/u);
+	});
+
+	it("rejects unknown redaction keys", () => {
+		const { agentDir, cwd } = fixture();
+		const path = join(agentDir, "sol-pi.json");
+		writeFileSync(path, JSON.stringify({
+			version: 1,
+			redaction: { enabled: true, patterns: [], extra: 1 },
+		}));
+		expect(() => loadSolPiConfig(cwd, agentDir, true)).toThrow(/redaction has an unknown key/u);
+	});
+
 	it("wraps malformed JSON errors with the config path", () => {
 		const { agentDir, cwd } = fixture();
 		mkdirSync(join(cwd, CONFIG_DIR_NAME));
