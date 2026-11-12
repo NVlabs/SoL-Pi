@@ -136,6 +136,39 @@ describe("SoL-Pi configuration preflight", () => {
 		expect(JSON.parse(result.stdout)).toMatchObject({ all_enabled: false });
 	});
 
+	it("accepts a redaction contract and integrity policy", () => {
+		const result = run(writeConfig({
+			...ALL_ENABLED,
+			redaction: { enabled: true, patterns: ["Bearer [A-Za-z0-9._~-]+"], replacement: "[redacted]" },
+			storeRepairMismatch: true,
+		}), false);
+		expect(result.status).toBe(0);
+		expect(JSON.parse(result.stdout).effective_config.redaction).toEqual({
+			enabled: true,
+			patterns: ["Bearer [A-Za-z0-9._~-]+"],
+			replacement: "[redacted]",
+		});
+	});
+
+	it("rejects an invalid redaction contract in the preflight", () => {
+		const result = run(writeConfig({
+			...ALL_ENABLED,
+			redaction: { enabled: true, patterns: ["("], replacement: "[redacted]" },
+		}), false);
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain("invalid redaction pattern");
+	});
+
+	it("applies the disabled redaction default", () => {
+		const result = run(writeConfig(ALL_ENABLED), false);
+		expect(result.status).toBe(0);
+		expect(JSON.parse(result.stdout).effective_config.redaction).toEqual({
+			enabled: false,
+			patterns: [],
+			replacement: "[redacted]",
+		});
+	});
+
 	it("rejects unknown configuration keys", () => {
 		const result = run(writeConfig({ ...ALL_ENABLED, provider: "custom" }));
 		expect(result.status).toBe(1);

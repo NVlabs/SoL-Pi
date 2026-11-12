@@ -10,6 +10,12 @@ import {
 	DEFAULT_REDUCER_MODEL,
 	DEFAULT_REDUCER_PROVIDER,
 } from "./extensions/evidence-preserving-reducer/config.ts";
+import {
+	DEFAULT_REDACTION,
+	compileRedaction,
+	REDACTION_LIMITS,
+	type RedactionContract,
+} from "./redaction.ts";
 
 export const DEFAULT_CACHE_WRITE_READ_RATIO = 12.5;
 
@@ -22,6 +28,8 @@ export interface SolPiConfig {
 	readonly evidencePreservingReducerProvider: string;
 	readonly onlineContextCompact: boolean;
 	readonly cacheWriteReadRatio: number;
+	readonly redaction: RedactionContract;
+	readonly storeRepairMismatch: boolean;
 }
 
 export const DEFAULT_CONFIG: SolPiConfig = Object.freeze({
@@ -33,6 +41,8 @@ export const DEFAULT_CONFIG: SolPiConfig = Object.freeze({
 	evidencePreservingReducerProvider: DEFAULT_REDUCER_PROVIDER,
 	onlineContextCompact: false,
 	cacheWriteReadRatio: DEFAULT_CACHE_WRITE_READ_RATIO,
+	redaction: DEFAULT_REDACTION,
+	storeRepairMismatch: false,
 });
 
 const FEATURE_KEYS = [
@@ -42,7 +52,14 @@ const FEATURE_KEYS = [
 	"onlineContextCompact",
 ] as const;
 const STRING_KEYS = ["evidencePreservingReducerModel", "evidencePreservingReducerProvider"] as const;
-const CONFIG_KEYS = new Set<string>(["version", ...FEATURE_KEYS, ...STRING_KEYS, "cacheWriteReadRatio"]);
+const CONFIG_KEYS = new Set<string>([
+	"version",
+	...FEATURE_KEYS,
+	...STRING_KEYS,
+	"cacheWriteReadRatio",
+	"redaction",
+	"storeRepairMismatch",
+]);
 
 export function findConfigPath(
 	cwd = process.cwd(),
@@ -118,6 +135,8 @@ export function loadSolPiConfig(
 		cacheWriteReadRatio,
 		evidencePreservingReducerModel,
 		evidencePreservingReducerProvider,
+		redaction: redactionContract(record, path),
+		storeRepairMismatch: booleanConfigValue(record, "storeRepairMismatch", false, path),
 	}) as SolPiConfig;
 }
 
@@ -132,4 +151,51 @@ function stringConfigValue(
 		throw new Error(`SoL-Pi config ${key} must be a non-empty string: ${path}`);
 	}
 	return value.trim();
+}
+
+function booleanConfigValue(
+	record: Record<string, unknown>,
+	key: string,
+	defaultValue: boolean,
+	path: string,
+): boolean {
+	const value = Object.hasOwn(record, key) ? record[key] : defaultValue;
+	if (typeof value !== "boolean") throw new Error(`SoL-Pi config ${key} must be boolean: ${path}`);
+	return value;
+}
+
+/**
+ * The redaction contract is data: the deployment declares which patterns a
+ * fleet class scrubs. Patterns are compiled at load so an invalid one stops
+ * the extension, never silently scrubs nothing.
+ */
+function redactionContract(record: Record<string, unknown>, path: string): RedactionContract {
+	const raw = Object.hasOwn(record, "redaction") ? record.redaction : undefined;
+	if (raw === undefined) return DEFAULT_REDACTION;
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+		throw new Error(`SoL-Pi config redaction must be an object: ${path}`);
+	}
+	const value = raw as Record<string, unknown>;
+	for (const key of Object.keys(value)) {
+		if (key !== "enabled" && key !== "patterns" && key !== "replacement") {
+			throw new Error(`SoL-Pi config redaction has an unknown key: ${key}`);
+		}
+	}
+	const enabled = Object.hasOwn(value, "enabled") ? value.enabled : false;
+	if (typeof enabled !== "boolean") throw new Error(`SoL-Pi config redaction.enabled must be boolean: ${path}`);
+	const patterns = Object.hasOwn(value, "patterns") ? value.patterns : [];
+	if (!Array.isArray(patterns)) throw new Error(`SoL-Pi config redaction.patterns must be an array: ${path}`);
+	if (patterns.length > REDACTION_LIMITS.maxPatterns) {
+		throw new Error(`SoL-Pi config redaction.patterns exceeds ${REDACTION_LIMITS.maxPatterns}: ${path}`);
+	}
+	for (const pattern of patterns) {
+		if (typeof pattern !== "string") throw new Error(`SoL-Pi config redaction.patterns entries must be strings: ${path}`);
+	}
+	const replacement = Object.hasOwn(value, "replacement") ? value.replacement : DEFAULT_REDACTION.replacement;
+	if (typeof replacement !== "string" || replacement.length === 0) {
+		throw new Error(`SoL-Pi config redaction.replacement must be a non-empty string: ${path}`);
+	}
+	const contract: RedactionContract = Object.freeze({ enabled, patterns: [...patterns] as string[], replacement });
+	compileRedaction(contract); // fail at load, not at the first capture
+	return contract;
 }

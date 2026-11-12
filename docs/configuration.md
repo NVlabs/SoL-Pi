@@ -23,11 +23,17 @@ The project file replaces the global file. SoL-Pi does not merge them.
   "evidencePreservingReducerProvider": "provider-id",
   "evidencePreservingReducerModel": "model-id",
   "onlineContextCompact": false,
-  "cacheWriteReadRatio": 12.5
+  "cacheWriteReadRatio": 12.5,
+  "redaction": {
+    "enabled": false,
+    "patterns": [],
+    "replacement": "[redacted]"
+  },
+  "storeRepairMismatch": false
 }
 ```
 
-Feature keys may be omitted and then default to `false`. `cacheWriteReadRatio` may be omitted and then defaults to `12.5`; when present it must be a finite non-negative number, and `0` explicitly means that a cache write adds no cost relative to a cache read. `evidencePreservingReducerProvider` and `evidencePreservingReducerModel` may be omitted and then use the built-in reducer route; when present each must be a non-empty string. Unknown keys, unsupported versions, malformed JSON, non-boolean feature values, invalid ratios, and invalid reducer model fields stop extension loading with a direct error.
+Feature keys may be omitted and then default to `false`. `cacheWriteReadRatio` may be omitted and then defaults to `12.5`; when present it must be a finite non-negative number, and `0` explicitly means that a cache write adds no cost relative to a cache read. `evidencePreservingReducerProvider` and `evidencePreservingReducerModel` may be omitted and then use the built-in reducer route; when present each must be a non-empty string. Unknown keys, unsupported versions, malformed JSON, non-boolean feature values, invalid ratios, invalid reducer model fields, and invalid redaction contracts stop extension loading with a direct error.
 
 For the managed all-enabled installation described in the [agent installation and configuration protocol](../agents-install.md), validate the effective file before starting Pi:
 
@@ -39,6 +45,25 @@ node scripts/check-sol-pi-config.mjs \
 
 This preflight does not make every valid SoL-Pi configuration all-enabled. Without `--require-all-enabled`, omitted feature keys retain their normal `false` defaults. The managed workflow uses the flag because its acceptance criterion is that all four mechanisms are active.
 
+## Redaction and store integrity
+
+`redaction` is the store-capture scrub contract. Observation-pack objects and Evidence-Preserving Reducer archives persist RAW tool output; when the store is shared (one repository's workflows read one store), the payload must be scrubbed before it is hashed, stored, or fed to the reducer — so content addressing, recall, and receipt validation all describe the same scrubbed bytes. The extension applies `patterns` (regular expressions, applied globally and in order) and replaces each match with `replacement`. A disabled contract is an exact identity: nothing is scrubbed.
+
+```json
+{
+  "version": 1,
+  "redaction": {
+    "enabled": true,
+    "patterns": ["api[_-]?key=[^\s]+", "Bearer [A-Za-z0-9._~-]+"],
+    "replacement": "[redacted]"
+  }
+}
+```
+
+Bounds: at most 32 patterns, each 1–200 characters, `replacement` 1–64 characters. A pattern matching the empty string, an invalid regex, or a malformed contract stops extension loading — an invalid contract never silently scrubs nothing. The replacement text is literal: `$` is not a backreference.
+
+`storeRepairMismatch` (default `false`) governs the integrity response to an existing object whose bytes differ from the payload. Objects are written atomically (temp file, fsync, rename), so a killed writer leaves either nothing or a complete object. Default `false` refuses a mismatch loudly (a torn legacy object is an integrity signal, not a cache hit); `true` repairs the mismatched single object. The repair unit is the OBJECT — never the session subtree.
+
 ## Feature behavior
 
 - `actionFusion`: registers SoL-Pi replacements for Pi's `edit` and `write` tools.
@@ -48,6 +73,8 @@ This preflight does not make every valid SoL-Pi configuration all-enabled. Witho
 - `evidencePreservingReducerModel`: model id used for Evidence-Preserving Reducer.
 - `onlineContextCompact`: registers `update_plan` and boundary-driven native compaction after the other SoL-Pi context transformers. On Pi 1.x, `update_plan` is declared to the model only and cannot be called from codemode scripts.
 - `cacheWriteReadRatio`: supplies the single economic decision ratio used by Online Context Compact.
+- `redaction`: the store-capture scrub contract shared by observation-pack and Evidence-Preserving Reducer; captures are scrubbed before hashing/storing so object names, recall bytes, and receipt checks stay consistent.
+- `storeRepairMismatch`: atomic-write integrity policy — refuse (default) or repair a mismatched single store object.
 
 ## Evidence-Preserving Reducer runtime inputs
 

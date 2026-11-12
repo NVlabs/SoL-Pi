@@ -10,6 +10,7 @@ import { loadActionFusionBashOptions } from "./shell-options.ts";
 import { registerEvidencePreservingReducer } from "./extensions/evidence-preserving-reducer/index.ts";
 import { registerObservationPack } from "./extensions/observation-pack/index.ts";
 import { registerOnlineContextCompact } from "./extensions/online-context-compact/index.ts";
+import { makeScrubber } from "./redaction.ts";
 
 export function registerConfiguredFeatures(
 	pi: ExtensionAPI,
@@ -17,11 +18,18 @@ export function registerConfiguredFeatures(
 	bashOptions?: BashToolOptions,
 ): void {
 	if (config.actionFusion) createActionFusionExtension({ bashOptions })(pi);
-	if (config.observationPack) registerObservationPack(pi);
+	// One scrubber shared by every capture mechanism: the deployment's
+	// redaction contract is the same for the observation pack and the reducer.
+	const scrub = makeScrubber(config.redaction);
+	if (config.observationPack) {
+		registerObservationPack(pi, { scrub, repairMismatch: config.storeRepairMismatch });
+	}
 	if (config.evidencePreservingReducer) {
 		registerEvidencePreservingReducer(pi, {
 			reducerModel: config.evidencePreservingReducerModel,
 			reducerProvider: config.evidencePreservingReducerProvider,
+			scrub,
+			repairMismatch: config.storeRepairMismatch,
 		});
 	}
 	if (config.onlineContextCompact) registerOnlineContextCompact(pi, config.cacheWriteReadRatio);
