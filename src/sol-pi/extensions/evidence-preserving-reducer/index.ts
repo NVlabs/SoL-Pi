@@ -75,7 +75,11 @@ export async function reduceToolResult(
 	const reducible = await reducibleToolResult(event);
 	if (!reducible || !DIAGNOSTIC_COMMAND.test(reducible.command)) return undefined;
 	const { body, command } = reducible;
-	if (Buffer.byteLength(body, "utf8") < config.minBytes) return undefined;
+	const bytes = Buffer.byteLength(body, "utf8");
+	if (bytes < config.minBytes) {
+		journal("fallback", { reason: "source-under-min-bytes", bytes, minBytes: config.minBytes });
+		return undefined;
+	}
 	// The receipt status follows `isError`. When the result's own text disagrees
 	// (a non-zero exit or a failed then_run reported as success, or the reverse),
 	// leave the original output in place rather than certify the wrong status.
