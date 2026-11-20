@@ -73,6 +73,20 @@ describe("published package", () => {
 		expect(config.evidencePreservingReducerModel).toBe("model-id");
 	});
 
+	it("bounds Pi peers to the validated legacy window and tested 1.x releases", () => {
+		const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as {
+			peerDependencies: Record<string, string>;
+		};
+		for (const packageName of [
+			"@earendil-works/pi-agent-core",
+			"@earendil-works/pi-ai",
+			"@earendil-works/pi-coding-agent",
+			"@earendil-works/pi-tui",
+		]) {
+			expect(packageJson.peerDependencies[packageName]).toBe(">=0.84.2 <0.86.0 || 1.0.4 || 1.3.0");
+		}
+	});
+
 	it("contains the standalone entrypoint and no Pi monorepo source", () => {
 		expect(files).toContain("src/sol-pi/index.ts");
 		expect(files).toContain("sol-pi.example.json");

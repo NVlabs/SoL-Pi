@@ -1,5 +1,7 @@
 # Pi Compatibility
 
+The source checkout pins Undici 8.12.2 through npm's dependency overrides to satisfy the required high-severity audit gate without changing the tested Pi version. This does not update a separately installed Pi.
+
 SoL-Pi requires `@earendil-works/pi-coding-agent` 0.84.2 or newer. It is tested against Pi 0.84.2, the supported floor, Pi 1.0.4, and Pi 1.3.0, the development dependency. Other versions are untested; Pi changed behavior SoL-Pi depends on in 0.87 and 0.99. `scripts/check-pi-compat.mjs` warns on an untested version and fails on it under `--strict`. Each tested version is checked by installing its four Pi packages over the development dependency (for 1.0.4 also `@earendil-works/pi-codemode`, `pi-mcp` and `chord` at 1.0.4) and running type checking, the complete test suite, and `scripts/check-pi-compat.mjs --strict`. The four Pi packages `@earendil-works/pi-agent-core`, `pi-ai`, `pi-coding-agent`, and `pi-tui` must have the same version. The runtime range is deliberately expressed as an open-ended peer dependency because Pi owns installation and upgrade of its packages; the declared floor is 0.84.2.
 
 Install Pi 1.3.0 rather than an earlier 1.x release. Before 1.3.0, Pi depends on its internal `@earendil-works/pi-*` packages with caret ranges, so a fresh install now pairs Pi 1.0.x or 1.1.0 with the 1.3.0 internals and Pi fails to load (`pi-codemode` 1.3.0 no longer exports `MCP_TYPESCRIPT_PREAMBLE`). Pi 1.3.0 pins them exactly. `scripts/check-pi-compat.mjs` warns when Pi's internal packages come from another release.
@@ -19,7 +21,7 @@ node scripts/check-pi-compat.mjs --pi-root "$(npm root -g)/@earendil-works/pi-co
 
 ## Public API surface
 
-SoL-Pi imports only public package exports:
+SoL-Pi declares all four Pi package peers at `>=0.84.2 <0.86.0 || 1.0.4 || 1.3.0`, preserving the validated legacy window and admitting only the explicitly tested 1.x releases. The checkout retains Pi 1.3.0 as its development dependency and validation target. Other 1.x versions and Pi 0.86 or newer pre-1.0 releases remain outside the declared peer range. Pi 0.81.1 remains a historical API compatibility check rather than a supported runtime baseline. SoL-Pi imports only public package exports:
 
 - `createEditToolDefinition`
 - `createWriteToolDefinition`
