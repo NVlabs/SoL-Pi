@@ -141,8 +141,22 @@ export function createObservationPackExtension(): ExtensionFactory {
 			},
 		});
 
+		const reportedUnavailableRuntimes = new WeakSet<object>();
 		pi.on("context", async (event, ctx: ExtensionContext) => {
-			const root = runtimeRoot(ctx);
+			let root: string;
+			try {
+				root = runtimeRoot(ctx);
+			} catch (error) {
+				// Fail open if session-derived storage cannot be resolved. A runtime
+				// failure must not turn every provider request into an extension error
+				// or remove any of the original context.
+				if (!reportedUnavailableRuntimes.has(ctx.sessionManager)) {
+					reportedUnavailableRuntimes.add(ctx.sessionManager);
+					const reason = error instanceof Error ? error.message : String(error);
+					console.error(`[observationpack] disabled for this session: ${reason}`);
+				}
+				return undefined;
+			}
 			// How many provider requests each message has already been part of,
 			// counted by the assistant messages that follow it.
 			const priorAssistantCounts = new Array<number>(event.messages.length);
