@@ -180,7 +180,7 @@ export async function reduceToolResult(
 		uncertain: checked.value.uncertain,
 		usage: provider.usage,
 	});
-	showSolPiSavings(context, "Luna Delegating", formatSavingsBytes(archive.bytes - receiptBytes));
+	showSolPiSavings(context, "Evidence Reducer", formatSavingsBytes(archive.bytes - receiptBytes));
 	return {
 		content: reducible.projectReceipt(receipt),
 		isError: event.isError,
