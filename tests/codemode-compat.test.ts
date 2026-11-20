@@ -592,8 +592,10 @@ describe.skipIf(createCodemodeExtension === undefined)("SoL-Pi with Pi codemode 
 
 			// 6. Online Context Compact: the direct update_plan boundary compacts and the task continues.
 			expect(run.compactionRequests).toEqual([
-				{ reason: "manual", customInstructions: BOUNDARY_COMPACTION_INSTRUCTIONS },
+				{ reason: "manual", customInstructions: expect.stringContaining('"stepId":"ship","goal":"ship the fix"') },
 			]);
+			expect(run.compactionRequests[0]?.customInstructions).toContain(BOUNDARY_COMPACTION_INSTRUCTIONS);
+			expect(run.compactionRequests[0]?.customInstructions).toContain('"verification":["pytest passed"]');
 			expect(run.compactionEnds).toEqual(["manual"]);
 			expect(run.compactions).toBe(1);
 			const continuation = request(run, "continuation").messages;
