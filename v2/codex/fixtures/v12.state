@@ -1,0 +1,1 @@
+{"k": {"n": 7, "tail": "[\"custom_tool_call_output\", null, \"c1\", [{\"type\": \"input_text\", \"text\": \"Script completed\\nOutput:\\nok 1\"}]]", "cheap": true, "start": 4, "want": null, "stints": [{"a": 4, "b": 7, "note": "OLD V12 NOTE", "why": "message"}], "calls": 876, "judged": 875, "back_calls": 0, "back_judged": null}}

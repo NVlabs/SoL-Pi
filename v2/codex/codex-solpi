@@ -1,0 +1,173 @@
+#!/usr/bin/env -S python3 -I
+"""One private proxy per Codex process; leave the terminal and process group alone."""
+import os
+from pathlib import Path
+import re
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+from records import default_log, open_record
+from savings import summary
+
+
+def descendants(parents):
+    if sys.platform == "darwin":
+        import ctypes
+        children = ctypes.CDLL("/usr/lib/libproc.dylib").proc_listchildpids
+        def direct(pid):
+            size = 16
+            while True:
+                buf = (ctypes.c_int * size)()
+                count = children(pid, buf, ctypes.sizeof(buf))
+                if count < size:
+                    return buf[:max(0, count)]
+                size *= 2
+    else:
+        rows = subprocess.check_output(["/bin/ps", "-eo", "pid=,ppid="], text=True)
+        tree = {}
+        for row in rows.splitlines():
+            pid, ppid = map(int, row.split())
+            tree.setdefault(ppid, []).append(pid)
+        def direct(pid):
+            return tree.get(pid, [])
+    found, pending = set(), list(parents)
+    while pending:
+        children_of_pid = set(direct(pending.pop())) - found
+        found.update(children_of_pid)
+        pending.extend(children_of_pid)
+    return found
+
+
+def send(pid, sig):
+    try:
+        os.kill(pid, sig)
+        return True
+    except ProcessLookupError:
+        return False
+
+
+def arguments(args, defaults):
+    commands = ('exec', 'e', 'resume', 'review')
+    configs = set()
+    pos = end = 0
+    while pos < len(args):
+        arg = args[pos]
+        if arg in commands:
+            pos += 1
+            end = pos
+            commands = ('resume', 'review')
+            if arg in ('resume', 'review'):
+                break
+        elif arg.startswith('-') and arg not in ('--', '-'):
+            size = 2 if arg in ('-c', '--config', '-m', '--model', '-p', '--profile', '-C', '--cd', '-s', '--sandbox',
+                                '-a', '--ask-for-approval', '-i', '--image', '--enable', '--disable', '--add-dir', '--remote',
+                                '--remote-auth-token-env', '--local-provider', '--output-schema', '-o', '--output-last-message', '--color') else 1
+            if arg.startswith(('-c', '--config=')) or arg == '--config':
+                configs.update(range(pos, pos + size))
+            pos += size
+        else:
+            break
+    return ([args[i] for i in range(end) if i not in configs] + defaults +
+            [args[i] for i in range(end) if i in configs] + args[end:])
+
+
+def cleanup(codex, proxy, sig):
+    tracked = {codex.pid} if codex and codex.poll() is None else set()
+    if tracked:
+        tracked.update(descendants(tracked))
+    proxy.terminate()
+    try:
+        proxy.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        proxy.kill()
+        proxy.wait()
+    group_int = sig == signal.SIGINT and proxy.returncode == 130
+    notified = set()
+    deadline = time.monotonic() + 1
+    while tracked:
+        codex.poll()
+        tracked = {pid for pid in tracked if send(pid, 0)}
+        if not tracked:
+            break
+        tracked.update(descendants(tracked))
+        for pid in tracked - notified:
+            try:
+                if not group_int or os.getpgid(pid) != os.getpgrp():
+                    send(pid, sig or signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        notified.update(tracked)
+        if time.monotonic() >= deadline:
+            for pid in tracked:
+                send(pid, signal.SIGKILL)
+            break
+        time.sleep(0.05)
+    if codex:
+        codex.wait()
+
+
+def run(tmp, env, log):
+    offset = log.seek(0, os.SEEK_END)
+    with open_record(tmp / 'proxy.err', 'a+b') as err:
+        mask = signal.pthread_sigmask(signal.SIG_BLOCK, [signal.SIGINT])
+        try:
+            proxy = subprocess.Popen([sys.executable, '-I', HERE / 'ccsave.py'], env=dict(env, CCSAVE_GROUP_WITNESS='1'),
+                                     stdin=subprocess.DEVNULL, stdout=err, stderr=err)
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+    codex = None
+    try:
+        deadline = time.monotonic() + 10
+        portfile = tmp / "port"
+        while not stopped and not portfile.exists() and proxy.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if stopped:
+            return 128 + stopped
+        if not portfile.exists():
+            print((tmp / "proxy.err").read_text() + "codex-solpi: proxy failed to start (no port file within 10 seconds).", file=sys.stderr)
+            return 1
+        provider = env.get("CCSAVE_PROVIDER") or "solpi"
+        key = env.get("CCSAVE_ENV_KEY") or "OPENAI_API_KEY"
+        if not all(re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", name) for name in (provider, key)):
+            print('codex-solpi: invalid provider or key environment-variable name.', file=sys.stderr)
+            return 1
+        prefix = "model_providers." + provider
+        options = ['model="gpt-6.1-sol"', 'model_reasoning_effort="xhigh"', f'model_provider="{provider}"',
+                   f'{prefix}.name="SoL-Pi"', f'{prefix}.base_url="http://127.0.0.1:{portfile.read_text()}/v1"',
+                   f'{prefix}.wire_api="responses"', f'{prefix}.env_key="{key}"']
+        defaults = [arg for opt in options for arg in ('-c', opt)]
+        codex = subprocess.Popen(['codex'] + arguments(sys.argv[1:], defaults), env=env)
+        while not stopped and codex.poll() is None:
+            try:
+                codex.wait(timeout=0.1)
+            except subprocess.TimeoutExpired:
+                pass
+        return 0 if stopped else codex.returncode if codex.returncode >= 0 else 128 - codex.returncode
+    finally:
+        cleanup(codex, proxy, stopped)
+        print(summary(log.fileno(), offset), file=sys.stderr)
+
+
+if __name__ == "__main__":
+    stopped = None
+    def stop(sig, frame):
+        global stopped
+        stopped = sig
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        if sig != signal.SIGHUP or signal.getsignal(sig) != signal.SIG_IGN:
+            signal.signal(sig, stop)
+    with tempfile.TemporaryDirectory(prefix="codex-solpi.") as tmp:
+        tmp = Path(tmp)
+        try:
+            path = os.environ.get('CCSAVE_LOG') or str(default_log(tmp.name))
+            with open_record(path, 'a+b') as log:
+                status = run(tmp, dict(os.environ, CCSAVE_LOG=path, CCSAVE_PORT_FILE=str(tmp / 'port')), log)
+        except (OSError, ValueError) as exc:
+            print('codex-solpi:', exc, file=sys.stderr)
+            status = 1
+    sys.exit(128 + stopped if stopped else status)
