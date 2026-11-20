@@ -1,5 +1,7 @@
 # Pi Compatibility
 
+The source checkout pins Undici 8.12.2 through npm's dependency overrides to satisfy the required high-severity audit gate without changing the tested Pi version. This does not update a separately installed Pi.
+
 SoL-Pi requires `@earendil-works/pi-coding-agent` 0.84.2 or newer. It is tested against Pi 0.84.2, the supported floor, Pi 1.0.4, and Pi 1.3.0, the development dependency. Other versions are untested; Pi changed behavior SoL-Pi depends on in 0.87 and 0.99. `scripts/check-pi-compat.mjs` warns on an untested version and fails on it under `--strict`. Each tested version is checked by installing its four Pi packages over the development dependency (for 1.0.4 also `@earendil-works/pi-codemode`, `pi-mcp` and `chord` at 1.0.4) and running type checking, the complete test suite, and `scripts/check-pi-compat.mjs --strict`. The four Pi packages `@earendil-works/pi-agent-core`, `pi-ai`, `pi-coding-agent`, and `pi-tui` must have the same version. The runtime range is deliberately expressed as an open-ended peer dependency because Pi owns installation and upgrade of its packages; the declared floor is 0.84.2.
 
 Install Pi 1.3.0 rather than an earlier 1.x release. Before 1.3.0, Pi depends on its internal `@earendil-works/pi-*` packages with caret ranges, so a fresh install now pairs Pi 1.0.x or 1.1.0 with the 1.3.0 internals and Pi fails to load (`pi-codemode` 1.3.0 no longer exports `MCP_TYPESCRIPT_PREAMBLE`). Pi 1.3.0 pins them exactly. `scripts/check-pi-compat.mjs` warns when Pi's internal packages come from another release.
@@ -69,6 +71,8 @@ Original bytes and the JSONL ledger live under the session-derived SoL-Pi direct
 ## Evidence-Preserving Reducer
 
 The reducer handles public `tool_result` events and resolves the configured reducer provider/model through Pi's model registry before calling `ExtensionContext.modelRegistry.complete()`, which Pi 0.84.2 and 1.0.x provide. The reducer preserves the original result whenever the configured reducer model is unavailable or eligibility, model-call, schema, source-hash, exact-quote, size, or likely-secret checks fail.
+
+Reducer archive reuse requires atomic no-follow file access and fails closed when the platform does not expose it. Tests cover this unavailable-capability behavior without depending on error wording; simulating an absent `O_NOFOLLOW` flag does not establish native Windows validation.
 
 Candidates are bash results and edit/write results that carry `then_run`. Pi 1.x marks a call that another tool made through `ctx.executeTool()`, such as a codemode script call, with `parentToolCallId`. The reducer ignores such results without archiving, journaling, or calling a model: they never enter the transcript, so reducing them would save no context, and they keep their `structuredContent`. The `codemode` tool's own result is never a candidate.
 
