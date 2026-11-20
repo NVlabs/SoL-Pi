@@ -175,11 +175,48 @@ function completeLineExcerpt(text: string, budgetBytes: number, fromEnd: boolean
 	return selected.join("");
 }
 
+/** Up to budgetBytes of UTF-8 from the start or end of text, never splitting a code point. */
+function byteExcerpt(text: string, budgetBytes: number, fromEnd: boolean): string {
+	let bytes = 0;
+	if (!fromEnd) {
+		let end = 0;
+		for (const char of text) {
+			const charBytes = Buffer.byteLength(char, "utf8");
+			if (bytes + charBytes > budgetBytes) break;
+			bytes += charBytes;
+			end += char.length;
+		}
+		return text.slice(0, end);
+	}
+	let start = text.length;
+	while (start > 0) {
+		const low = text.charCodeAt(start - 1);
+		const high = start > 1 ? text.charCodeAt(start - 2) : 0;
+		const pair = low >= 0xdc00 && low <= 0xdfff && high >= 0xd800 && high <= 0xdbff;
+		const width = pair ? 2 : 1;
+		const charBytes = Buffer.byteLength(text.slice(start - width, start), "utf8");
+		if (bytes + charBytes > budgetBytes) break;
+		bytes += charBytes;
+		start -= width;
+	}
+	return text.slice(start);
+}
+
 export function placeholderFor(observation: Observation): string {
 	const headBudget = Math.floor(PLACEHOLDER_EXCERPT_BYTES / 2);
 	const tailBudget = PLACEHOLDER_EXCERPT_BYTES - headBudget;
-	const head = completeLineExcerpt(observation.text, headBudget, false);
-	const tail = completeLineExcerpt(observation.text, tailBudget, true);
+	let head = completeLineExcerpt(observation.text, headBudget, false);
+	let headLabel = `[first complete lines, up to ${headBudget} bytes]`;
+	if (head === "") {
+		head = byteExcerpt(observation.text, headBudget, false);
+		headLabel = `[start of first line, up to ${headBudget} bytes]`;
+	}
+	let tail = completeLineExcerpt(observation.text, tailBudget, true);
+	let tailLabel = `[middle omitted; last complete lines, up to ${tailBudget} bytes]`;
+	if (tail === "") {
+		tail = byteExcerpt(observation.text, tailBudget, true);
+		tailLabel = `[middle omitted; end of last line, up to ${tailBudget} bytes]`;
+	}
 	return [
 		`[large tool result replaced after its first ${FULL_SENDS} provider requests]`,
 		`id: ${observation.id}`,
@@ -188,9 +225,9 @@ export function placeholderFor(observation: Observation): string {
 		`original_lines: ${observation.lines}`,
 		`estimated_tokens: ${observation.tokens}`,
 		`retrieve: call obs_recall with {"id":"${observation.id}","offset":0}; continue with returned next_offset`,
-		`[first complete lines, up to ${headBudget} bytes]`,
+		headLabel,
 		head,
-		`[middle omitted; last complete lines, up to ${tailBudget} bytes]`,
+		tailLabel,
 		tail,
 		`[${observation.bytes} original bytes omitted]`,
 	].join("\n");
