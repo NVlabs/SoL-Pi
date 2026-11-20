@@ -80,6 +80,35 @@ function resolveCacheWriteReadRatio(value: number | null | undefined): number | 
 	return value;
 }
 
+/**
+ * Resolve the cache write/read ratio from the active model's cost profile.
+ *
+ * Pi's model registry exposes per-model pricing (input, cacheRead, cacheWrite).
+ * The ratio = cacheWrite / cacheRead determines the cache-rewrite penalty in
+ * SoL-Pi's compaction economic model. Different models have vastly different
+ * ratios (Claude: 12.5, Gemini: 4.0, DeepSeek: 3.65, uncached: 1.0).
+ *
+ * Falls back to the configured static ratio when model cost data is unavailable.
+ */
+export function resolveModelCacheWriteReadRatio(
+	model: { readonly cost?: { readonly cacheWrite?: number; readonly cacheRead?: number; readonly input?: number } } | undefined,
+	fallbackRatio: number | null,
+): number | null {
+	if (model?.cost) {
+		const write = model.cost.cacheWrite ?? model.cost.input;
+		const read = model.cost.cacheRead;
+		// Model with active prompt caching discount
+		if (typeof write === "number" && typeof read === "number" && Number.isFinite(write) && Number.isFinite(read) && read > 0) {
+			return write / read;
+		}
+		// Model with no caching discount (write/read = 1.0 → zero cache rewrite penalty)
+		if (typeof write === "number" && Number.isFinite(write) && read === 0) {
+			return 1.0;
+		}
+	}
+	return fallbackRatio;
+}
+
 function tokenEstimate(text: string): number {
 	return Math.ceil(Buffer.byteLength(text) / 4);
 }
@@ -327,6 +356,8 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 				state.positiveContextDeltaCount === 0
 					? null
 					: state.positiveContextDeltaTotal / state.positiveContextDeltaCount;
+			const dynamicCacheRatio = resolveModelCacheWriteReadRatio(context.model, cacheWriteReadRatio);
+
 			const priced = decideCompaction({
 				writeTokens,
 				archiveTokens,
@@ -343,7 +374,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 						: state.requestCount - state.lastCompactionRequestCount,
 				carriedDebtTokens: state.cacheDebtTokens,
 				cacheDebtRepaymentTokens: state.cacheDebtRepaymentTokens,
-				cacheWriteReadRatio,
+				cacheWriteReadRatio: dynamicCacheRatio,
 				economics: { ...DEFAULT_COMPACTION_ECONOMICS, windowReserveTokens: reserveTokens },
 			});
 			const decision: CompactionDecision =
