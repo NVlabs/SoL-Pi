@@ -19,6 +19,7 @@
 
 ## 📰 News
 
+- **2026-11-20** — **SoL-Pi v2 is in development** on the [`sol-pi-v2-exp`](https://github.com/NVlabs/SoL-Pi/tree/sol-pi-v2-exp) branch. It is more robust than SoL-Pi v1, fully supports Codex and Claude Code, and adds **Ultra**, an efficient agent-swarm mode.
 - **2026-10-14** — Released the [SoL-Pi Skill](examples/sol-pi-skill/README.md) example: use SoL-Pi as a skill from Claude Code (`/sol-pi`) or Codex (`$sol-pi`). The current task is handed to SoL-Pi with the host conversation as context, runs in the background, and its result is reported back to the session.
 - **2026-10-13** — Released the [SoL-Pi Visual](examples/solpi-visual/README.md) example for 3D scene reconstruction in Blender. On this task, it lowers the cost per scene by **37%** compared with Codex, with 13% fewer model calls. See the example for visual scores and scene comparisons.
 
