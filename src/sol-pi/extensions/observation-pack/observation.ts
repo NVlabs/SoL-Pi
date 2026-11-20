@@ -98,6 +98,9 @@ export function isObservationId(id: string): boolean {
 export function createObservation(message: ToolResultMessage, runtimeRoot: string): Observation | undefined {
 	const text = textFromResult(message);
 	if (containsReducerReceipt(text)) return undefined;
+	// Recalling an observation is the delivery path: packaging the recall output
+	// would mint a new observation of the same payload and loop packaging forever.
+	if (message.toolName === "obs_recall") return undefined;
 	const bytes = Buffer.byteLength(text, "utf8");
 	if (bytes <= THRESHOLD_BYTES) return undefined;
 	if (!runtimeRoot) throw new Error("SoL-Pi runtime directory is unavailable");
@@ -187,7 +190,7 @@ export function placeholderFor(observation: Observation): string {
 		`original_bytes: ${observation.bytes}`,
 		`original_lines: ${observation.lines}`,
 		`estimated_tokens: ${observation.tokens}`,
-		`retrieve: call obs_recall with {"id":"${observation.id}","offset":0}; continue with returned next_offset`,
+		`retrieve: call obs_recall with {"id":"${observation.id}","offset":0}; continue with returned next_offset; stop when eof=true`,
 		`[first complete lines, up to ${headBudget} bytes]`,
 		head,
 		`[middle omitted; last complete lines, up to ${tailBudget} bytes]`,

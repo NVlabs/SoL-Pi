@@ -91,10 +91,15 @@ export function createObservationPackExtension(): ExtensionFactory {
 					}
 					throw error;
 				}
-				const header = [
-					`[obs_recall id=${params.id} offset=${offset} next_offset=${chunk.nextOffset} eof=${chunk.eof}]`,
-					`[chunk_bytes=${chunk.bytes} chunk_lines=${chunk.lines}; use next_offset to continue]`,
-				].join("\n");
+				const header = chunk.eof
+					? [
+							`[obs_recall id=${params.id} offset=${offset} eof=true]`,
+							`[chunk_bytes=${chunk.bytes} chunk_lines=${chunk.lines}; final chunk; do not continue]`,
+						].join("\n")
+					: [
+							`[obs_recall id=${params.id} offset=${offset} next_offset=${chunk.nextOffset} eof=false]`,
+							`[chunk_bytes=${chunk.bytes} chunk_lines=${chunk.lines}; use next_offset to continue]`,
+						].join("\n");
 				const content = `${header}\n${chunk.text}`;
 				if (Buffer.byteLength(content, "utf8") > RECALL_MAX_BYTES || countLines(content) > RECALL_MAX_LINES) {
 					throw new Error("Recall output exceeded its hard limit");
