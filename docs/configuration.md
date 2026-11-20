@@ -55,6 +55,8 @@ The release entry supplies the run label and session-derived storage. It uses on
 
 - **Reducer provider/model** — from `evidencePreservingReducerProvider` and `evidencePreservingReducerModel` in the effective `sol-pi.json`. If omitted, SoL-Pi uses its built-in reducer route. SoL-Pi resolves that model through Pi's model registry and still relies on Pi-managed authentication; do not put credentials in `sol-pi.json`.
 
+Before calling the reducer model, SoL-Pi leaves diagnostic output unchanged when its precautionary secret check detects credential assignments, command-shaped password/passphrase flags with values, or private-key armor (including PGP private keys). This is not a complete secret scanner; ordinary password-related test names, assertion diagnostics, and flag documentation remain eligible for reduction.
+
 ## Online Context Compact runtime inputs
 
 The release entry uses these runtime inputs:
