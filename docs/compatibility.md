@@ -1,5 +1,7 @@
 # Pi Compatibility
 
+The source checkout pins Undici 8.12.2 through npm's dependency overrides to satisfy the required high-severity audit gate without changing the tested Pi version. This does not update a separately installed Pi.
+
 SoL-Pi requires `@earendil-works/pi-coding-agent` 0.84.2 or newer. It is tested against Pi 0.84.2, the supported floor, Pi 1.0.4, and Pi 1.3.0, the development dependency. Other versions are untested; Pi changed behavior SoL-Pi depends on in 0.87 and 0.99. `scripts/check-pi-compat.mjs` warns on an untested version and fails on it under `--strict`. Each tested version is checked by installing its four Pi packages over the development dependency (for 1.0.4 also `@earendil-works/pi-codemode`, `pi-mcp` and `chord` at 1.0.4) and running type checking, the complete test suite, and `scripts/check-pi-compat.mjs --strict`. The four Pi packages `@earendil-works/pi-agent-core`, `pi-ai`, `pi-coding-agent`, and `pi-tui` must have the same version. The runtime range is deliberately expressed as an open-ended peer dependency because Pi owns installation and upgrade of its packages; the declared floor is 0.84.2.
 
 Install Pi 1.3.0 rather than an earlier 1.x release. Before 1.3.0, Pi depends on its internal `@earendil-works/pi-*` packages with caret ranges, so a fresh install now pairs Pi 1.0.x or 1.1.0 with the 1.3.0 internals and Pi fails to load (`pi-codemode` 1.3.0 no longer exports `MCP_TYPESCRIPT_PREAMBLE`). Pi 1.3.0 pins them exactly. `scripts/check-pi-compat.mjs` warns when Pi's internal packages come from another release.
@@ -65,6 +67,12 @@ If the mutation fails, the command is not run and the call fails with `[then_run
 ObservationPack changes only the messages projected through the public `context` event. Pi passes `context` handlers a cloned copy of the conversation, so stored session history remains intact. ObservationPack replaces the content of those message objects in place and returns nothing. Since Pi 0.87, a handler that returns different message objects makes Pi merge every mid-conversation system message, such as prompt sections and tool-declaration deltas, into one leading system message, which breaks the provider's cached prefix on every later request. The in-place edit keeps those messages where they are on Pi 1.x and behaves the same on Pi 0.84.2.
 
 Original bytes and the JSONL ledger live under the session-derived SoL-Pi directory.
+
+The directory returned by Pi's `SessionManager.getSessionDir()` is the trusted storage boundary; Pi's session directory and its ancestors must remain under the user's control. Before creating or opening an object, ObservationPack checks every descendant directory (`sol-pi`, the session id, `observation-pack`, and `objects`). Missing directories are created individually, and each component must be an ordinary directory before traversal continues. The complete descendant chain is checked again after object open, before reading or writing payload bytes. Pre-existing symlinks and Windows junctions reported as symbolic links by Node's `lstat()` are rejected, including a linked runtime root.
+
+For `--no-session` and in-memory sessions, the private runtime directory created by SoL-Pi is the trusted boundary instead; its `observation-pack` and `objects` descendants receive the same checks.
+
+Object access also uses `O_NOFOLLOW` where available, and requires the pathname and open handle to identify the same regular file. These checks detect the tested directory substitutions and path-restoration races. Node's portable filesystem API does not provide directory-handle-relative traversal: the checks are not an atomic defense against a process that can repeatedly replace storage ancestors during validation. Other Windows reparse-point types are not covered by the junction tests. Native Windows execution remains an outstanding validation gate; the simulated no-`O_NOFOLLOW` lifecycle does not establish native reparse-point safety.
 
 ## Evidence-Preserving Reducer
 
