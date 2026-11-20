@@ -49,7 +49,10 @@ export interface ReducedToolResult {
 	readonly isError: boolean;
 }
 
-export type EvidencePreservingReducerOptions = ReducerConfigOptions;
+export interface EvidencePreservingReducerOptions extends ReducerConfigOptions {
+	readonly scrub?: (text: string) => string;
+	readonly repairMismatch?: boolean;
+}
 
 function errorName(error: unknown): string | undefined {
 	return isRecord(error) && typeof error.name === "string" ? error.name : undefined;
@@ -70,11 +73,19 @@ export async function reduceToolResult(
 	config: ReducerConfig,
 	event: ToolResultEvent,
 	context: ExtensionContext,
+	scrub: (text: string) => string = (text) => text,
+	repairMismatch = false,
 ): Promise<ReducedToolResult | undefined> {
 	if (isNestedToolResult(event)) return undefined;
 	const reducible = await reducibleToolResult(event);
 	if (!reducible || !DIAGNOSTIC_COMMAND.test(reducible.command)) return undefined;
-	const { body, command } = reducible;
+	const { command } = reducible;
+	// Scrub BEFORE hashing/archiving: the reducer input, the store object,
+	// and every receipt quote describe the same scrubbed bytes.
+	const body = scrub(reducible.body);
+	if (body !== reducible.body) {
+		journal("scrubbed", { toolCallId: event.toolCallId, sourceBytes: Buffer.byteLength(reducible.body, "utf8"), scrubbedBytes: Buffer.byteLength(body, "utf8") });
+	}
 	if (Buffer.byteLength(body, "utf8") < config.minBytes) return undefined;
 	// The receipt status follows `isError`. When the result's own text disagrees
 	// (a non-zero exit or a failed then_run reported as success, or the reverse),
@@ -97,7 +108,7 @@ export async function reduceToolResult(
 		return undefined;
 	}
 
-	const archive = await archiveBody(archiveRoot(config), body);
+	const archive = await archiveBody(archiveRoot(config), body, { repairMismatch });
 	journal("candidate", {
 		toolCallId: event.toolCallId,
 		commandSha256: sha256(command),
@@ -216,7 +227,14 @@ export function createEvidencePreservingReducerExtension(options: EvidencePreser
 				state = { config, journal: createJournal(pi, config) };
 				states.set(root, state);
 			}
-			return reduceToolResult(state.journal, state.config, event, context);
+			return reduceToolResult(
+				state.journal,
+				state.config,
+				event,
+				context,
+				options.scrub,
+				options.repairMismatch === true,
+			);
 		});
 	};
 }

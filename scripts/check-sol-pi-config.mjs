@@ -16,7 +16,14 @@ const DEFAULT_CACHE_WRITE_READ_RATIO = 12.5;
 const DEFAULT_EPR_REDUCER_PROVIDER = ["openai", "codex"].join("-");
 const DEFAULT_EPR_REDUCER_MODEL = ["gpt-5.6", "luna"].join("-");
 const STRING_KEYS = ["evidencePreservingReducerModel", "evidencePreservingReducerProvider"];
-const CONFIG_KEYS = new Set(["version", ...FEATURE_KEYS, ...STRING_KEYS, "cacheWriteReadRatio"]);
+const CONFIG_KEYS = new Set([
+	"version",
+	...FEATURE_KEYS,
+	...STRING_KEYS,
+	"cacheWriteReadRatio",
+	"redaction",
+	"storeRepairMismatch",
+]);
 
 function fail(message) {
 	throw new Error(message);
@@ -95,6 +102,8 @@ function validateConfig(value, requireAllEnabled) {
 		"evidencePreservingReducerProvider",
 		DEFAULT_EPR_REDUCER_PROVIDER,
 	);
+	effective.redaction = redactionContract(value);
+	effective.storeRepairMismatch = booleanConfigValue(value, "storeRepairMismatch", false);
 
 	return {
 		ok: true,
@@ -117,4 +126,39 @@ try {
 } catch (error) {
 	console.error(`SoL-Pi configuration preflight failed: ${error instanceof Error ? error.message : String(error)}`);
 	process.exitCode = 1;
+}
+
+function booleanConfigValue(value, key, defaultValue) {
+	const configured = Object.hasOwn(value, key) ? value[key] : defaultValue;
+	if (typeof configured !== "boolean") fail(`${key} must be boolean`);
+	return configured;
+}
+
+function redactionContract(value) {
+	const raw = Object.hasOwn(value, "redaction") ? value.redaction : undefined;
+	if (raw === undefined) return { enabled: false, patterns: [], replacement: "[redacted]" };
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) fail("redaction must be an object");
+	for (const key of Object.keys(raw)) {
+		if (key !== "enabled" && key !== "patterns" && key !== "replacement") fail(`redaction has an unknown key: ${key}`);
+	}
+	const enabled = Object.hasOwn(raw, "enabled") ? raw.enabled : false;
+	if (typeof enabled !== "boolean") fail("redaction.enabled must be boolean");
+	const patterns = Object.hasOwn(raw, "patterns") ? raw.patterns : [];
+	if (!Array.isArray(patterns)) fail("redaction.patterns must be an array");
+	if (patterns.length > 32) fail("redaction.patterns exceeds 32");
+	for (const pattern of patterns) {
+		if (typeof pattern !== "string") fail("redaction.patterns entries must be strings");
+		if (pattern.length === 0 || pattern.length > 200) fail("each redaction pattern must be 1..200 characters");
+		let regex;
+		try {
+			regex = new RegExp(pattern, "u");
+		} catch (error) {
+			fail(`invalid redaction pattern: ${pattern}`);
+		}
+		if (regex.test("")) fail("redaction pattern matches the empty string");
+	}
+	const replacement = Object.hasOwn(raw, "replacement") ? raw.replacement : "[redacted]";
+	if (typeof replacement !== "string" || replacement.length === 0) fail("redaction.replacement must be a non-empty string");
+	if (replacement.length > 64) fail("redaction.replacement exceeds 64 characters");
+	return { enabled, patterns: [...patterns], replacement };
 }
