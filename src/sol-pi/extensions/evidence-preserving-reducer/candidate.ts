@@ -6,7 +6,7 @@ import { lstat, readFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname } from "node:path";
 import type { ToolResultEvent } from "@earendil-works/pi-coding-agent";
-import { recordValue } from "./config.ts";
+import { DIAGNOSTIC_COMMAND, recordValue } from "./config.ts";
 
 /** Markers written by the action-fusion extension around a fused command's output. */
 const THEN_RUN_SUCCEEDED = "[then_run:succeeded]";
@@ -87,11 +87,16 @@ function firstIndex(left: number, right: number): number {
 /**
  * Identify the log inside a tool result: either a plain bash result, or the
  * command output appended by a fused `edit`/`write` call.
+ *
+ * The diagnostic-command gate is applied as soon as the command is known,
+ * before the untruncated body is resolved. Recovering that body can read an
+ * arbitrarily large `pi-bash-*.log` into memory, and a command that will never
+ * be reduced must not pay for it.
  */
 export async function reducibleToolResult(event: ToolResultEvent): Promise<ReducibleToolResult | undefined> {
 	if (event.toolName === "bash") {
 		const command = typeof event.input.command === "string" ? event.input.command : "";
-		if (!command) return undefined;
+		if (!command || !DIAGNOSTIC_COMMAND.test(command)) return undefined;
 		const inline = textContent(event);
 		const exitCode = structuredExitCode(event);
 		return {
@@ -104,7 +109,7 @@ export async function reducibleToolResult(event: ToolResultEvent): Promise<Reduc
 	if (event.toolName !== "write" && event.toolName !== "edit") return undefined;
 	const thenRun = recordValue(event.input, "then_run");
 	const commandValue = recordValue(thenRun, "command");
-	if (typeof commandValue !== "string" || !commandValue) return undefined;
+	if (typeof commandValue !== "string" || !commandValue || !DIAGNOSTIC_COMMAND.test(commandValue)) return undefined;
 	for (let index = 0; index < event.content.length; index++) {
 		const block = event.content[index];
 		if (!block || block.type !== "text") continue;

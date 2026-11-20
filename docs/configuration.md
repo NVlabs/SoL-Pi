@@ -55,6 +55,8 @@ The release entry supplies the run label and session-derived storage. It uses on
 
 - **Reducer provider/model** — from `evidencePreservingReducerProvider` and `evidencePreservingReducerModel` in the effective `sol-pi.json`. If omitted, SoL-Pi uses its built-in reducer route. SoL-Pi resolves that model through Pi's model registry and still relies on Pi-managed authentication; do not put credentials in `sol-pi.json`.
 
+The reducer checks whether a command is diagnostic before recovering its full-output file. Non-diagnostic Bash results and fused `then_run` results remain unchanged without reading that file. Nested tool results are also left unchanged.
+
 ## Online Context Compact runtime inputs
 
 The release entry uses these runtime inputs:
