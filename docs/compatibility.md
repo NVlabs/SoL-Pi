@@ -72,6 +72,8 @@ The reducer handles public `tool_result` events and resolves the configured redu
 
 Candidates are bash results and edit/write results that carry `then_run`. Pi 1.x marks a call that another tool made through `ctx.executeTool()`, such as a codemode script call, with `parentToolCallId`. The reducer ignores such results without archiving, journaling, or calling a model: they never enter the transcript, so reducing them would save no context, and they keep their `structuredContent`. The `codemode` tool's own result is never a candidate.
 
+For truncated output, the reducer prefers Pi's `details.fullOutputPath`. Older failing bash calls and fused results can omit that metadata, so it also recognizes Pi's terminal `[Showing ... Full output: ...]` footer, optionally followed by the exit-status line. Ordinary `Full output:` references and quoted footers followed by more output do not select a source file. Both paths retain the regular-file, filename, and system-temporary-directory checks; the text fallback is a compatibility convention, not an authenticated marker.
+
 A receipt's status follows the result's `isError` flag. The reducer also reads the result's own exit signal from the inline text, not from Pi's full-output temporary file, which lacks the status line:
 
 - `structuredContent.exit_code` on Pi 1.x bash results;
