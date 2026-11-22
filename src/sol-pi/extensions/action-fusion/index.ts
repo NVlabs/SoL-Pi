@@ -26,8 +26,10 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 	type ExtensionFactory,
+	type Theme,
 	type WriteToolOptions,
 } from "@earendil-works/pi-coding-agent";
+import { type Component, Container } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { resolveToolPath } from "./file-queue.ts";
 import { isNestedToolCallId, renderSolPiTool, showSolPiSavings } from "../../tui.ts";
@@ -82,6 +84,17 @@ function showsSavingsBanner(thenRun: unknown, context: { readonly isError?: bool
 	return Boolean(thenRun) && !context.isError;
 }
 
+/**
+ * `renderCall`/`renderResult` are optional on Pi's `ToolDefinition`, so a
+ * Pi-compatible host may ship edit/write without them. Draw the banner over
+ * whatever the host rendered, and render nothing of our own when the host
+ * renders nothing and no banner applies: an empty container draws no lines.
+ */
+function fuseRow(base: Component | undefined, showsBanner: boolean, theme: Theme): Component {
+	if (showsBanner) return renderSolPiTool(theme, "Action Fusion", "1 model round-trip avoided", base);
+	return base ?? new Container();
+}
+
 export function createActionFusionExtension(options: ActionFusionOptions = {}): ExtensionFactory {
 	const baseEdit = memoizeByCwd((cwd: string) => createEditToolDefinition(cwd, options.editOptions));
 	const baseWrite = memoizeByCwd((cwd: string) => createWriteToolDefinition(cwd, options.writeOptions));
@@ -116,18 +129,18 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 				announceSavings(status, toolCallId, ctx);
 				return result;
 			},
-			renderCall: (args, theme, context) => {
-				const base = baseEdit(context.cwd).renderCall!(args, theme, context);
-				return showsSavingsBanner(args.then_run, context)
-					? renderSolPiTool(theme, "Action Fusion", "1 model round-trip avoided", base)
-					: base;
-			},
-			renderResult: (result, resultOptions, theme, context) => {
-				const base = baseEdit(context.cwd).renderResult!(result, resultOptions, theme, context);
-				return showsSavingsBanner(context.args.then_run, context)
-					? renderSolPiTool(theme, "Action Fusion", "1 model round-trip avoided", base)
-					: base;
-			},
+			renderCall: (args, theme, context) =>
+				fuseRow(
+					baseEdit(context.cwd).renderCall?.(args, theme, context),
+					showsSavingsBanner(args.then_run, context),
+					theme,
+				),
+			renderResult: (result, resultOptions, theme, context) =>
+				fuseRow(
+					baseEdit(context.cwd).renderResult?.(result, resultOptions, theme, context),
+					showsSavingsBanner(context.args.then_run, context),
+					theme,
+				),
 		});
 
 		pi.registerTool<typeof writeParameters, undefined>({
@@ -147,18 +160,18 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 				announceSavings(status, toolCallId, ctx);
 				return result;
 			},
-			renderCall: (args, theme, context) => {
-				const base = baseWrite(context.cwd).renderCall!(args, theme, context);
-				return showsSavingsBanner(args.then_run, context)
-					? renderSolPiTool(theme, "Action Fusion", "1 model round-trip avoided", base)
-					: base;
-			},
-			renderResult: (result, resultOptions, theme, context) => {
-				const base = baseWrite(context.cwd).renderResult!(result, resultOptions, theme, context);
-				return showsSavingsBanner(context.args.then_run, context)
-					? renderSolPiTool(theme, "Action Fusion", "1 model round-trip avoided", base)
-					: base;
-			},
+			renderCall: (args, theme, context) =>
+				fuseRow(
+					baseWrite(context.cwd).renderCall?.(args, theme, context),
+					showsSavingsBanner(args.then_run, context),
+					theme,
+				),
+			renderResult: (result, resultOptions, theme, context) =>
+				fuseRow(
+					baseWrite(context.cwd).renderResult?.(result, resultOptions, theme, context),
+					showsSavingsBanner(context.args.then_run, context),
+					theme,
+				),
 		});
 	};
 }
