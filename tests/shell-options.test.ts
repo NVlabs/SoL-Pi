@@ -68,6 +68,20 @@ describe("Action Fusion inherits Pi shell settings", () => {
 		expect(() => loadActionFusionBashOptions(cwd, false, agentDir)).toThrow("could not load Pi shell settings");
 	});
 
+	it("keeps the other mechanisms alive when the host settings object has no drainErrors", () => {
+		const { agentDir, cwd } = fixture();
+		expect(loadActionFusionBashOptions(cwd, false, agentDir, () => ({ getShellPath: () => "/host/bin/bash" }))).toEqual({
+			shellPath: "/host/bin/bash", commandPrefix: undefined,
+		});
+	});
+
+	it("retains platform defaults when the host exposes no shell settings methods", () => {
+		const { agentDir, cwd } = fixture();
+		expect(loadActionFusionBashOptions(cwd, false, agentDir, () => ({}))).toEqual({
+			shellPath: undefined, commandPrefix: undefined,
+		});
+	});
+
 	it("forwards shell options through configured feature registration into then_run", async () => {
 		const { cwd } = fixture();
 		const tools = new Map<string, ToolDefinition>();
