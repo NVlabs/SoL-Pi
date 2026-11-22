@@ -46,8 +46,10 @@ export const SKIPPED_COMPACTION_REMINDER =
 const RECOVERABLE_COMPACTION_ERRORS = new Set([
 	"Nothing to compact (session too small)",
 	"Already compacted",
-	"Summarization failed: generation hit the token cap and the summary is incomplete",
 ]);
+// Pi labels the incomplete-summary failure per summarization pass
+// ("Summarization", "Turn prefix summarization"), so match the stable suffix.
+const INCOMPLETE_SUMMARY_SUFFIX = "failed: generation hit the token cap and the summary is incomplete";
 export const COMPACTION_FAILED_RESUME_REMINDER =
 	"Online context compaction did not complete. The parent task is still active. " +
 	"Continue the remaining work from the current plan.";
@@ -449,7 +451,9 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 				});
 				compactionInFlight = false;
 				const failure = compactionError && !isUserAbort(compactionError) ? compactionError : undefined;
-				const recoverableError = failure !== undefined && RECOVERABLE_COMPACTION_ERRORS.has(failure.message);
+				const recoverableError =
+					failure !== undefined &&
+					(RECOVERABLE_COMPACTION_ERRORS.has(failure.message) || failure.message.endsWith(INCOMPLETE_SUMMARY_SUFFIX));
 				if (recoverableError) {
 					compactionRefused = true;
 					pi.appendEntry("sol-pi-online-context-compact-skipped", { reason: failure!.message });

@@ -60,6 +60,7 @@ describe("Online Context Compact recovery", () => {
 		"Nothing to compact (session too small)",
 		"Already compacted",
 		"Summarization failed: generation hit the token cap and the summary is incomplete",
+		"Turn prefix summarization failed: generation hit the token cap and the summary is incomplete",
 	])("continues after %s and blocks repeated plan-only attempts", async (message) => {
 		const { pi, manager, ctx, boundary, compact, abort } = await scenario(new Error(message));
 		await boundary("first");
