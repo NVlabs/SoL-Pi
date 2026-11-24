@@ -1,0 +1,13 @@
+{
+  "name": "sol-pi-v2",
+  "version": "2.0.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Same-API model hand-offs and cheap compaction summaries for Pi 1.2.0",
+  "type": "module",
+  "keywords": ["pi-package"],
+  "files": ["pi-entry.ts", "extension.js", "lib", "README.md"],
+  "pi": { "extensions": ["./pi-entry.ts"] },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*" },
+  "scripts": { "test": "node --test test/*.test.js" }
+}
