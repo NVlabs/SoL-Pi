@@ -1,20 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: MIT
-"""Open records relative to a checked directory; never follow a user's symlink."""
+"""Open records relative to a checked directory; refuse symlinked records directories and files."""
 import hashlib
 import os
 from pathlib import Path
 import secrets
 import stat
-import sys
 from contextlib import contextmanager
 
 
 @contextmanager
 def directory(path, create=False, private=False):
     path = Path(os.path.abspath(path))
-    if sys.platform == 'darwin' and path.parts[1:2] in (('var',), ('tmp',)):
-        path = Path('/private', *path.parts[1:])
+    path = Path(os.path.realpath(path.parent)) / path.name
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     fd = os.open('/', flags)
     try:

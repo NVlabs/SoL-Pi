@@ -253,6 +253,9 @@ runpy.run_path(sys.argv[1], run_name="__main__")'''
         self.gw = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Gateway)
         threading.Thread(target=lambda: self.gw.serve_forever(poll_interval=.02), daemon=True).start()
         self.tmp = tempfile.TemporaryDirectory()
+        config = patch.dict(TEST_ENV, CLAUDE_CONFIG_DIR=self.tmp.name + "/.claude")
+        config.start()
+        self.addCleanup(config.stop)
         self.log = self.tmp.name + "/ccsave.jsonl"
         self.start()
 
@@ -834,7 +837,9 @@ sys.exit(7)
                                 env=env, input="terminal input", text=True, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 7, result.stderr)
         got = json.loads(Path(capture).read_text())
-        self.assertEqual(got["args"], ["--continue", "two words", "literal $value"])
+        self.assertEqual(got["args"][0], "--settings")
+        self.assertEqual(json.loads(got["args"][1]), {"env": {"ANTHROPIC_BASE_URL": f"http://127.0.0.1:{got['port']}"}})
+        self.assertEqual(got["args"][2:], ["--continue", "two words", "literal $value"])
         self.assertEqual((got["stdin"], got["status"]), ("terminal input", 200))
         self.assertEqual(got["saved"], self.log + ".saved.json")
         c = http.client.HTTPConnection("127.0.0.1", got["port"], timeout=1)
@@ -843,6 +848,37 @@ sys.exit(7)
                 c.connect()
         finally:
             c.close()
+
+    def test_launcher_checks_provider_settings_in_precedence_order(self):
+        env = self.launcher_stub("import os, sys, json\nfrom pathlib import Path\n"
+                                 "Path(os.environ['CAPTURE']).write_text(json.dumps(sys.argv[1:]))")
+        project = Path(self.tmp.name, "project").resolve()
+        local = project / ".claude" / "settings.local.json"
+        local.parent.mkdir(parents=True)
+        config = Path(self.tmp.name, "config").resolve()
+        config.mkdir()
+        env.update(HOME=self.tmp.name, CLAUDE_CONFIG_DIR=str(config))
+        user, shared = config / "settings.json", local.with_name("settings.json")
+        upstream = env["CCSAVE_UPSTREAM"]
+        def launch():
+            return subprocess.run([HERE + "/claude-solpi", "--continue"], cwd=project, env=env,
+                                  capture_output=True, text=True, timeout=5)
+        local.write_text("{invalid")
+        for path in (user, shared, local):
+            with self.subTest(path=path):
+                url = "https://provider.example/" + path.parent.name + "/" + path.name
+                path.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": url}}))
+                result = launch()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(str(path), result.stderr)
+                self.assertIn(url, result.stderr)
+                self.assertIn("CCSAVE_UPSTREAM", result.stderr)
+        local.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": upstream + "/"}}))
+        result = launch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        flag, settings, arg = json.loads(Path(env["CAPTURE"]).read_text())
+        self.assertEqual((flag, arg), ("--settings", "--continue"))
+        self.assertRegex(json.loads(settings)["env"]["ANTHROPIC_BASE_URL"], r"^http://127\.0\.0\.1:\d+$")
 
     def test_launcher_start_failure_and_signal_cleanup(self):
         self.stop()
@@ -1835,6 +1871,38 @@ class Configuration(unittest.TestCase):
                     finally:
                         proc.kill()
 
+    def test_stalled_note_and_extend_hand_back_within_deadline(self):
+        for stalled in ("note", "extend"):
+            with self.subTest(stalled=stalled):
+                release, finished = threading.Event(), threading.Event()
+                def side(what, *args, **kwargs):
+                    if what == stalled:
+                        release.wait(1)
+                        finished.set()
+                    return NOTE if what == "note" else '{"handback":false}'
+
+                st = dict(proxy.new_state(), cheap=True, start=len(START), n=len(START), tail=proxy.mark(START[-1]))
+                last = "Continue working." if stalled == "extend" else "Check the results."
+                body = {"model": OPUS, "messages": START + step(1) + [{"role": "user", "content": last}]}
+                with patch.object(proxy.State, "st", st), patch.object(proxy, "save"), patch.object(proxy, "log") as log, \
+                        patch.object(proxy, "SIDE_WAIT_S", .05, create=True), patch.object(proxy, "side", side):
+                    try:
+                        before = time.monotonic()
+                        sent, cheap = proxy.route(body, {}, "/")
+                        self.assertLess(time.monotonic() - before, .5)
+                        self.assertFalse(cheap)
+                        if stalled == "note":
+                            self.assertIn(STEPS_HEAD, json.dumps(sent))
+                            self.assertIn("step 1", json.dumps(sent))
+                            self.assertFalse(log.call_args[0][0]["note"])
+                    finally:
+                        release.set()
+                    self.assertTrue(finished.wait(1))
+                    wait_for(lambda: st["stints"][0]["note"] == NOTE)
+                    later, cheap = proxy.route(body, {}, "/")
+                    self.assertFalse(cheap)
+                    self.assertIn(NOTE, json.dumps(later))
+
     def test_unchanged_opus_history_has_bounded_fingerprints(self):
         messages = START + sum((step(i) for i in range(100)), [])
         body = {"messages": messages, "model": OPUS}
@@ -1958,6 +2026,15 @@ class Configuration(unittest.TestCase):
                 charged, spared = (newer, own) if same else (own, newer)
                 self.assertAlmostEqual(charged["ping_cost"], proxy.cost(OPUS, {"input_tokens": 50, "output_tokens": 7}))
                 self.assertEqual(spared["ping_cost"], 0)
+
+    def test_incomplete_cheap_request_only_charges_usage(self):
+        ledger = copy.deepcopy(proxy.Saving.data)
+        proxy.account({"kind": "request", "routed": True, "model": CHEAP, "baseline_model": OPUS,
+                       "status": 200, "complete": False, "reason": "stream-error",
+                       "usage": {"input_tokens": 10000, "output_tokens": 100}}, ledger)
+        self.assertAlmostEqual(ledger["cheap_cost"], .00105)
+        self.assertEqual(ledger["baseline_cost"], 0)
+        self.assertAlmostEqual(ledger["estimated_saved"], -.00105)
 
     def test_haiku_is_priced_by_prompt_length(self):
         haiku = "claude-haiku-5-5"

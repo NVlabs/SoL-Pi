@@ -130,6 +130,7 @@ TASK_CHARS, TRAJ_ITEMS, TRAJ_CHARS = 6000, 80, 40000  # task and recent-work siz
 NOTE_CHARS = 4 * 100000  # 4 characters per token over half of a 200k window
 MALFORMED = {400, 404, 413, 422}
 LIMITED = 429
+SIDE_WAIT_S = 60  # the longest an Opus request waits for a note or a return judgement; a late note serves later requests
 RETRY_S = tuple(float(s) for s in os.environ.get("CCSAVE_RETRY_S", "3,10,30").split(",") if s)  # the waits before sending a rate-limited Haiku request again (a third, longer wait was added to the first two)
 COMPACT_MARK = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."  # Claude Code 2.1.288's compaction instruction
 
@@ -287,7 +288,8 @@ def account(rec, ledger=None):
             actual, baseline = cost(rec.get("model"), usage, d), cost(rec.get("baseline_model"), usage, d)
             if actual is not None and baseline is not None:
                 d["cheap_cost"] += actual
-                d["baseline_cost"] += baseline
+                if rec.get("complete") is True:  # Opus redoes an unfinished cheap turn: it saved nothing
+                    d["baseline_cost"] += baseline
         else:
             return
         d["estimated_saved"] = d["baseline_cost"] - d["cheap_cost"] - d["judge_note_cost"] - d["ping_cost"]
@@ -747,13 +749,25 @@ def turn_end(msgs, st):
     return next((k for k in range(st["from"] or st["start"], len(msgs)) if instruction(msgs[k])), None)
 
 
+def within(seconds, call):
+    """Run call on a daemon thread and wait for it at most `seconds`; a call still running finishes on its own."""
+    worker = threading.Thread(target=call, daemon=True)
+    worker.start()
+    worker.join(seconds)
+
+
 def write_note(s, msgs, headers, path, model, ledger=None):
     clean, _ = detach(msgs, s)
-    s["note"] = side("note", HANDBACK_NOTE_SYSTEM, transcript(steps_of(stint_steps(clean, s)), NOTE_CHARS), headers, path, ledger=ledger)
-    log({"at": round(time.time(), 3), "kind": "switch", "to": model, "why": s["why"], "stint": [s["a"], s["b"]], "note": bool(s["note"])})
-    with State.lock:
-        if any(record is s for record in State.st["stints"]):
-            save()
+    user, ledger = transcript(steps_of(stint_steps(clean, s)), NOTE_CHARS), Saving.data if ledger is None else ledger
+
+    def write():
+        note = side("note", HANDBACK_NOTE_SYSTEM, user, headers, path, ledger=ledger)
+        with State.lock:
+            s["note"] = note
+            if any(record is s for record in State.st["stints"]):
+                save()
+    within(SIDE_WAIT_S, write)  # a note not ready by then: Opus gets the steps now and the note on later requests
+    log({"at": round(time.time(), 3), "kind": "switch", "to": model, "why": s["why"], "stint": [s["a"], s["b"]], "note": bool(s.get("note"))})
 
 
 def remember(s, msgs):
@@ -918,7 +932,9 @@ def route(body, headers, path, compaction=False, appended=None):
             end = None
         user = judge_input(steps_of(msgs[st["start"]:end + 1]), msgs, "; the cheaper model has just ended its turn") if end is not None else None
     if end is not None:
-        keep = decision(side("extend", RETURN_INSTRUCTIONS, user, headers, path), "handback") is False
+        answer, ledger = [], Saving.data
+        within(SIDE_WAIT_S, lambda: answer.append(side("extend", RETURN_INSTRUCTIONS, user, headers, path, ledger=ledger)))
+        keep = bool(answer) and decision(answer[0], "handback") is False  # no answer in time gives the work back
         with State.lock:
             if keep and st["cheap"]:
                 st["from"] = end + 1

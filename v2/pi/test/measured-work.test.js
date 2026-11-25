@@ -153,6 +153,26 @@ test('on measured work the strong model gets back its own thinking level; otherw
   }
 });
 
+for (const gpu of [false, true]) test(`restart during a stint restores measured work and the strong thinking level (${gpu ? 'GPU' : 'compacted image'})`, async () => {
+  const h = harness(SOL, { gpu });
+  h.pi.getThinkingLevel = () => 'xhigh';
+  if (!gpu) seeImage(h);
+  await startStint(h);
+  h.add({ type: 'compaction', firstKeptEntryId: h.entries.at(-2).id, summary: 'Earlier work.' });
+
+  const resumed = harness(LUNA, { gpu }, h.entries), sent = withSend(resumed);
+  let level = 'medium';
+  resumed.pi.getThinkingLevel = () => level;
+  resumed.pi.setThinkingLevel = l => { level = l; };
+  resumed.c.restoreHandoff(resumed.ctx);
+  const request = resumed.c.cheapNote({ payload: { input: [] } });
+  assert.equal(request.input[0].content, CHEAP_NOTE + MEASURED_CHEAP_NOTE);
+  await resumed.c.switchAtTurnEnd(resumed.ctx, { message: stop(LUNA) });
+  assert.equal(resumed.ctx.model.id, SOL.id);
+  assert.equal(level, 'xhigh');
+  assert.deepEqual(sent, [{ content: REVIEW_NOTE, options: { deliverAs: 'followUp' } }]);
+});
+
 test("the cheap model's note asks it to stop before quality decisions on measured work only", async () => {
   for (const gpu of [true, false]) for (const strong of [SOL, OPUS]) {
     const h = harness(strong, { gpu });

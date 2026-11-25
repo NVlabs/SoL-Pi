@@ -43,6 +43,7 @@ STATE_FILE = LOG + ".state" if LOG else ""
 # cheap model.
 JUDGE_EVERY = int(os.environ.get("CCSAVE_JUDGE_EVERY") or 10)
 TASK_CHARS, TRAJ_ITEMS, TRAJ_CHARS = 6000, 80, 40000  # the judge's task and recent-work sizes, as in the Pi extension
+NOTE_WAIT_S = 60  # the longest Sol's request waits for a hand-back note; a late note serves later requests
 NOTE_CHARS = 4 * 136000  # as in the Pi extension, the note writer gets 4 characters a token over half of its window (Luna: 272k)
 
 # The Pi extension's prompts (../pi/extension.js), word for word, except the return judge's last rule and NOTE_HEAD.
@@ -401,6 +402,7 @@ def conv_of(key, prefix, top):
             old, st = matches[0]
             State.routing[key] = State.routing.pop(old, threading.Lock())
             del State.convs[old]
+            State.mains.pop(old, None)
         else:
             st = new_conv()
         State.convs[key] = st
@@ -480,7 +482,7 @@ def end_stint(st, end, why, prefix):
     return s
 
 
-def retry_notes(ranges, headers, path, bounded=False):
+def retry_notes(ranges, headers, path, wait):
     with State.lock:
         pending = [(s, items) for s, items, prefix in ranges if CHEAP and not s.get("note") and s["attempts"] < 3
                    and id(s) not in State.writing and matching_range(s, prefix)]
@@ -498,12 +500,9 @@ def retry_notes(ranges, headers, path, bounded=False):
                 s["note"] = note
                 State.writing.discard(id(s))
                 save()
-    if bounded:
-        worker = threading.Thread(target=write, daemon=True)
-        worker.start()
-        worker.join(0.25)
-    else:
-        write()
+    worker = threading.Thread(target=write, daemon=True)
+    worker.start()
+    worker.join(wait)
 
 
 def strong_request(key, out, headers, path):
@@ -518,7 +517,7 @@ def log_return(req, closed):
 
 def retry_request(req, stints, headers, path, prefix, extra=()):
     items = req.get("input") or []
-    retry_notes([(s, items, prefix) for s in stints] + list(extra), headers, path, bounded=True)
+    retry_notes([(s, items, prefix) for s in stints] + list(extra), headers, path, wait=0.25)
     with State.lock:
         return dict(req, input=with_guidelines(view(items, stints, prefix)))
 
@@ -625,7 +624,7 @@ def route(key, req, headers, path, compaction, binding=None):
             if compaction and closed and st["judged"] is not None:
                 st["judged"] = st["calls"] - JUDGE_EVERY + 1
             save()
-        retry_notes([(s, items, prefix) for s in st['stints']], headers, path)
+        retry_notes([(s, items, prefix) for s in st['stints']], headers, path, wait=NOTE_WAIT_S)
         if closed is not None:
             log_return(req, closed)
         with State.lock:
@@ -662,7 +661,8 @@ def ping_mains():
     now = time.time()
     with State.lock:
         due = [(k, dict(m)) for k, m in State.mains.items()
-               if PING_S > 0 and m.get("away") and now - m["touched"] >= PING_S and now - m["away"] < STOP_AFTER_S]
+               if PING_S > 0 and State.convs.get(k, {}).get("cheap") and m.get("away")
+               and now - m["touched"] >= PING_S and now - m["away"] < STOP_AFTER_S]
         for k, _ in due:
             State.mains[k]["touched"] = now
     for k, m in due:

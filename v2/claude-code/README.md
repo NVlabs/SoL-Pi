@@ -25,6 +25,11 @@ belongs to foreground Claude Code. On TERM/HUP the launcher signals the client�
 descendants, then kills survivors after about ten seconds. The key is forwarded in request headers; it is not stored in proxy state. Use `claude-solpi --continue`
 to resume with the same log and state. Use a separate `CCSAVE_LOG` for each concurrent conversation.
 
+**Provider switchers.** Tools such as cc-switch write `ANTHROPIC_BASE_URL` into Claude Code's settings, and the settings override the
+environment. Set `CCSAVE_UPSTREAM` to that URL: the launcher passes the proxy's URL with `--settings`, which overrides user and
+project settings for this session. If a settings file names a different URL, the launcher stops and names the file. Managed
+settings that set the URL cannot be overridden, so the launcher refuses to start under them.
+
 The default records directory is `$XDG_STATE_HOME/sol-pi-v2/<project-key>/`, or
 `~/.local/state/sol-pi-v2/<project-key>/` if `XDG_STATE_HOME` is unset or relative. The key is the SHA-256 of the
 absolute working directory. The proxy does not look for `.ccsave` in a checkout. To adopt **trusted** old records,
@@ -73,7 +78,7 @@ survives a restart when the saved file matches the ledger ID in state. A fresh s
 status file without that ID starts at zero. A status-file override does not combine totals from different logs. If you
 run the status command outside the launcher, set `CCSAVE_SAVED_FILE` or `CCSAVE_LOG`; without either it shows “starting”.
 
-The estimate is **cheap-model usage priced at Opus's rates − cheap-model cost − judge and note cost − keep-alive cost**. It includes
+The estimate is **completed cheap-model usage priced at Opus's rates − cheap-model cost − judge and note cost − keep-alive cost**. It includes
 input, output, cache reads and cache writes. Current-generation judges count, even rejected hand-offs; stale answers do not charge a newer generation or conversation; a negative saving is possible.
 The status line shows the keep-alive cost, already subtracted, after the saving.
 It excludes any effect on later Opus usage or task quality. It is an estimate, not an invoice.
@@ -108,8 +113,8 @@ Choose rates before starting a conversation; already accumulated costs retain th
 | Waiting | Keep Opus when the next step only waits for a job while other parts still need design or new code. The return judge gives work back in the same situation. |
 | Formal proofs | A proof verdict latches the current conversation to Opus. A proof-only verdict reaches disk on the next state save; a restart before then may judge again. A new conversation starts unlatched. |
 | Stint | The cheap model sees the task, the judge's brief, recent work and its own steps. Hook-only feedback and bare “continue”, “continue working”, “keep going”, “go on” or “proceed” prompts can extend the stint if the return judge explicitly keeps it. Case, spaces and final punctuation are ignored for bare continues. Any other text, including text alongside hook feedback, ends the stint. |
-| Way back | At the cheap counter threshold (default 10) and at turn ends, judge whether Opus is needed. A failed or malformed return judgement gives work back on the next request. A compaction instruction ends the stint even without tools or thinking. |
-| Hand-back note | Replace the stint with a note describing done, state, open and unverified work. If the note call fails, use a transcript without thinking. Boundary instructions remain after the note. Split a mixed message only at that boundary, removing cheap tool results with their calls. Extended hooks and bare continues fold into the note with their original message count and cache markers. |
+| Way back | At the cheap counter threshold (default 10) and at turn ends, judge whether Opus is needed. A failed or malformed return judgement gives work back on the next request, and so does a turn-end judgement that takes longer than 60 seconds. A compaction instruction ends the stint even without tools or thinking. |
+| Hand-back note | Replace the stint with a note describing done, state, open and unverified work. If the note call fails or takes longer than 60 seconds, use a transcript without thinking; later requests use the note once it is ready. Boundary instructions remain after the note. Split a mixed message only at that boundary, removing cheap tool results with their calls. Extended hooks and bare continues fold into the note with their original message count and cache markers. |
 | History mismatch | A history shorter than the previous request's, or a change in the first 4,000 characters of that request's last message (serialized, cache markers aside), is a mismatch; edits elsewhere do not count. Recover matching notes; replace uncertain turns from possible cheap ranges with omission notices and take their paired results with them. With no cheap stint, keep the incoming messages. |
 | Failures | Malformed-request statuses (400/404/413/422), 401/403 and 5xx retry on Opus; 429 does so after retries. A cheap stream succeeds only with a terminal `message_stop` and no error or interruption. Outstanding requests at restart force handback. If the cheap request cannot be recorded before sending, route it to Opus instead. |
 | Keep-warm | After 270 seconds idle, resend the newest Opus request with an automated “ok” instruction to keep its five-minute prompt cache alive. Each ping pays a cache read of the whole context: about $0.04 at a 200k-token context and Opus 5.5's cache-read rate, about $0.50 an hour, and proportionally more for a larger context. Pings stop after an hour without a request from Claude Code (`CCSAVE_PING_IDLE_CAP_S`), which caps an idle session at about an hour of pings, and resume with its next request; the proxy's own pings, judges and notes do not count as requests. Stop when the parent or launcher's Claude Code child exits, with a separate watcher even while an upstream call is blocked. Both poll every five seconds. |

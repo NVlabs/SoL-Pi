@@ -987,13 +987,49 @@ class Routing(unittest.TestCase):
         self.assertEqual(self.route(START, compact=True)["model"], "sol")
         self.assertEqual(self.route(START + step(1))["model"], CHEAP)
 
-    def test_key_adoption_does_not_move_keep_warm_request(self):
-        self.route(START)
+    def test_key_adoption_stops_old_keep_warm_pings(self):
+        st, h = self.stint()
+        ccsave.State.mains["k"]["touched"] -= 300
+        out = self.route(h + step(2) + [user("Switch tasks.")], "new")
+        self.assertEqual(out["model"], "sol")
+        self.assertIs(ccsave.State.convs["new"], st)
+        with mock.patch.object(ccsave, "PING_S", 270), mock.patch.object(ccsave, "upstream") as upstream:
+            ccsave.ping_mains()
+            upstream.assert_not_called()
+        self.assertNotIn("k", ccsave.State.mains)
+
+    def test_keep_warm_skips_missing_or_strong_conversation(self):
+        st, _ = self.stint()
         main = ccsave.State.mains["k"]
-        st = ccsave.State.convs["k"]
-        self.assertIs(adopt("new", START + step(1)), st)
-        self.assertIs(ccsave.State.mains.get("k"), main)
-        self.assertNotIn("new", ccsave.State.mains)
+        main["touched"] -= 300
+        ccsave.State.mains["missing"] = dict(main)
+        st["cheap"] = False
+        with mock.patch.object(ccsave, "PING_S", 270), mock.patch.object(ccsave, "upstream") as upstream:
+            ccsave.ping_mains()
+            upstream.assert_not_called()
+
+    def test_stalled_return_note_leaves_raw_steps_until_ready(self):
+        st, h = self.stint()
+        items = h + step(2) + [user("Switch tasks.")]
+        entered, release = threading.Event(), threading.Event()
+        def side(*args):
+            entered.set()
+            release.wait()
+            return NOTE
+        self.side.side_effect = side
+        with mock.patch.object(ccsave, "NOTE_WAIT_S", 0.05, create=True), concurrent.futures.ThreadPoolExecutor(1) as pool:
+            first = pool.submit(self.route, items)
+            try:
+                self.assertTrue(entered.wait(2))
+                out = first.result(timeout=0.5)
+                self.assertEqual(out["model"], "sol")
+                self.assertEqual(out["input"][-4:], items[-4:])
+            finally:
+                release.set()
+        wait_for(lambda: st["stints"][-1]["note"] == NOTE)
+        later = self.route(items + step(3))
+        self.assertIn(NOTE, json.dumps(later["input"]))
+        self.assertNotIn(step(2)[1], later["input"])
 
     def test_zero_ping_interval_turns_keep_warm_off(self):
         self.stint()

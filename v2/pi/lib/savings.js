@@ -33,7 +33,10 @@ export function savingsOf(entries, registry) {
     const start = index ? spans[index - 1].end ?? spans[index - 1].start : 0;
     for (let i = 0; i < entries.length; i++) {
       const e = entries[i], m = e.message;
-      if (owned.get(entryKey(e))?.span === s) gross += tokenCost(m.usage, find(s.strong)) - actualCost(m.usage, find(s.cheap));
+      if (owned.get(entryKey(e))?.span === s) {
+        const baseline = m.stopReason === 'error' || m.stopReason === 'aborted' ? 0 : tokenCost(m.usage, find(s.strong));
+        gross += baseline - actualCost(m.usage, find(s.cheap));
+      }
       if ((noteCall(e.data) && (s.id === e.data.stint || s.keys.has(e.data.stint))) || (judgeCall(e.data) && i >= start && i < (s.end ?? entries.length))) overhead += fees[i];
     }
     return { ...s, gross, saved: gross - overhead };

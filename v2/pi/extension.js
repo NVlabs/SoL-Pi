@@ -156,10 +156,12 @@ export function createController(pi, opts = {}) {
   function restoreHandoff(ctx) {
     if (s.handoffRestored) return;
     s.handoffRestored = true;
-    const { active } = handoffsOf(entriesOf(ctx));
+    const entries = entriesOf(ctx);
+    if (entries.some(e => e.type === "custom" && e.customType === LOG && e.data?.mechanism === "measured-work" && e.data.reason === "image")) s.sawImage = true;
+    const { active } = handoffsOf(entries);
     if (active && sameModel(ctx.model, active.cheap)) {
       s.main = findModel(ctx, active.strong) ?? null;
-      if (s.main) s.api = s.main.api;
+      if (s.main) { s.api = s.main.api; s.strongLevel = entries[active.start].data.strongLevel; }
     }
   }
   function modelSelected(e) {
@@ -526,7 +528,7 @@ export function createController(pi, opts = {}) {
     s.main = from ?? null; s.want = null;
     if (from) { s.backCalls = 0; s.backJudgedAt = null; s.noted = false; }
     log({ kind: "applied", mechanism: "momentum-switch", reason, to: `${model.provider}/${model.id}`,
-      ...(from ? { strong: modelRef(from), cheap: modelRef(model), forwardCalls: s.calls ?? 0 } : {}) });
+      ...(from ? { strong: modelRef(from), strongLevel: s.strongLevel, cheap: modelRef(model), forwardCalls: s.calls ?? 0 } : {}) });
     await showSwitch(ctx, !from);
   }
   const isClaude = (m) => m?.api === "anthropic-messages";

@@ -48,6 +48,8 @@ SoL-Pi treats a session as measured work in two cases:
 | End of a stint | A normal stop of the cheaper model hands the work back on both APIs. The strong model then reviews the work at its own thinking level before the run ends. |
 | Long commands | On Claude with a GPU, a command runs up to 10 minutes, Claude Code's longest bash timeout, before it goes on in the background. |
 
+Both carry over a restart (`pi --continue`): a session with an image stays measured work after the image has left the context, and the strong model gets its thinking level back at the hand-back.
+
 In a session with no image, on a machine without a GPU, every request is unchanged.
 
 ## Install and use
@@ -107,7 +109,7 @@ Only Pi's TUI shows notices and a persistent status-bar entry:
 Money saved · ~$0.42 (this stint) · ~$3.10 (this session)
 ```
 
-The estimate prices the stint's tokens at the strong model's rates, subtracts the cheap model's actual cost, then subtracts judge and note calls, including failed note attempts. One-hour cache writes cost twice the input rate, as in Pi 1.2.0; shorter writes use the cache-write rate, with the applicable input-size tier. Session totals are rebuilt from session records. `~` marks an estimate, not an invoice; totals can be negative. In the TUI the return note is written before displaying its cost. Print and RPC modes have no display changes and keep their existing note-call timing.
+The estimate prices the stint's tokens at the strong model's rates, subtracts the cheap model's actual cost, then subtracts judge and note calls, including failed note attempts. An errored or aborted cheap turn incurs its actual cost and earns no strong-model savings. One-hour cache writes cost twice the input rate, as in Pi 1.2.0; shorter writes use the cache-write rate, with the applicable input-size tier. Session totals are rebuilt from session records. `~` marks an estimate, not an invoice; totals can be negative. In the TUI the return note is written before displaying its cost. Print and RPC modes have no display changes and keep their existing note-call timing.
 
 ## What decides compaction
 

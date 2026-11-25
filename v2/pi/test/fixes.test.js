@@ -263,6 +263,18 @@ test('TUI switches notify once with net token savings including judges and notes
   }
 });
 
+test('errored and aborted cheap turns cost money without saving strong-model tokens', async () => {
+  for (const stopReason of ['error', 'aborted']) {
+    const h = harness(SOL, { callCheap: async () => ({ ok: true, text: 'Done.' }) });
+    h.ctx.mode = 'tui';
+    h.c.state.want = 'handoff'; await h.c.switchAtTurnEnd(h.ctx, {});
+    h.entries.push({ type: 'message', message: { ...msg(LUNA, 3), stopReason, usage: { input: 100000, cost: { total: .05 } } } });
+    h.c.state.want = 'handback'; await h.c.switchAtTurnEnd(h.ctx, {});
+    assert.match(h.notices.at(-1)[0], /Money saved · ~\$-0\.05 \(this stint\) · ~\$-0\.05 \(this session\)/);
+    assert.match(h.statuses.at(-1)[1], /~\$-0\.05 saved/);
+  }
+});
+
 test('session totals are rebuilt after restart and include failed note attempts and every judge call', async () => {
   const h = harness(SOL, { callCheap: async () => ({ ok: true, text: 'Done.', usage: { cost: { total: .02 } } }) }, recordedStint());
   for (const e of h.entries) if (e.message?.model === LUNA.id) e.message.usage = { input: 100000, output: 1000, cost: { total: .03 } };

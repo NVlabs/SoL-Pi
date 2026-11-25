@@ -170,6 +170,16 @@ class Launcher(unittest.TestCase):
                 self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
             self.assertEqual(list(sentinel.iterdir()), [])
 
+    def test_symlinked_state_parent(self):
+        base = self.dir.parent / 'state'
+        base.mkdir()
+        link = self.dir.parent / 'linked-state'
+        link.symlink_to(base)
+        proc = self.launch(XDG_STATE_HOME=str(link))
+        _, err = proc.communicate(timeout=5)
+        self.assertEqual(proc.returncode, 0, err)
+        self.assertIn(base.resolve(), Path(self.record()['log']).resolve().parents)
+
     def test_unsafe_paths_refused_without_changing_target(self):
         victim = self.dir / 'victim'
         victim.write_text('unchanged')
