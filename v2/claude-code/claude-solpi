@@ -1,0 +1,124 @@
+#!/bin/bash
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+# One proxy and one Claude Code process, with shared lifetime and status file.
+set -euo pipefail
+D=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+python3 -I - <<'PYSETTINGS'
+import json, os, sys
+from pathlib import Path
+from urllib.parse import urlsplit
+
+managed = Path("/Library/Application Support/ClaudeCode" if sys.platform == "darwin" else "/etc/claude-code") / "managed-settings.json"
+project = Path.cwd() / ".claude"
+config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+for path in (managed, project / "settings.local.json", project / "settings.json", config / "settings.json"):
+    try:
+        url = json.loads(path.read_bytes())["env"]["ANTHROPIC_BASE_URL"]
+    except (OSError, ValueError, KeyError, TypeError):
+        continue
+    if not isinstance(url, str) or not url:
+        continue
+    if path == managed:
+        sys.exit(f"claude-solpi: {path} sets ANTHROPIC_BASE_URL in managed settings and prevents proxying")
+    if url.rstrip("/") != os.environ.get("CCSAVE_UPSTREAM", "").rstrip("/"):
+        try:
+            parts = urlsplit(url)
+            display = parts._replace(netloc=parts.netloc.rsplit("@", 1)[-1], query="", fragment="").geturl()
+        except ValueError:
+            display = "(invalid URL)"
+        sys.exit(f"claude-solpi: {path} sets ANTHROPIC_BASE_URL to {display!r}; set CCSAVE_UPSTREAM to that URL or remove ANTHROPIC_BASE_URL from the file")
+    break
+PYSETTINGS
+: "${CCSAVE_UPSTREAM:?Set CCSAVE_UPSTREAM to your API base URL (https://api.anthropic.com).}"
+RUN=$(mktemp -d "${TMPDIR:-/tmp}/claude-solpi.XXXXXX")
+proxy_pid= child_pid= foreground_pid= interrupted=0
+cleanup() {
+    trap - EXIT
+    trap '' INT TERM HUP
+    local pid deadline=$((SECONDS + 10)) others=
+    if [[ -n $child_pid ]]; then
+        others=$(python3 -I "$D/launcher-tree.py" "$child_pid") || echo 'claude-solpi: cannot enumerate detached tools' >&2
+        kill -"${shutdown_signal:-TERM}" -- "-$child_pid" 2>/dev/null || kill -TERM "$child_pid" 2>/dev/null || :
+        for pid in $others; do kill -"${shutdown_signal:-TERM}" "$pid" 2>/dev/null || :; done
+    fi
+    if [[ -n $proxy_pid ]]; then
+        kill -"${shutdown_signal:-${normal_exit:-TERM}}" "$proxy_pid" 2>/dev/null || :
+    fi
+    while { [[ -n $child_pid ]] && kill -0 -- "-$child_pid" 2>/dev/null; } ||
+          { [[ -n $others ]] && kill -0 $others 2>/dev/null; } ||
+          { [[ -n $proxy_pid ]] && kill -0 "$proxy_pid" 2>/dev/null; }; do
+        (( SECONDS < deadline )) || break
+        sleep 0.1
+    done
+    [[ -z $child_pid ]] || kill -KILL -- "-$child_pid" 2>/dev/null || :
+    for pid in $others "$child_pid" "$proxy_pid"; do
+        if [[ -n $pid ]]; then
+            kill -KILL "$pid" 2>/dev/null || :
+            wait "$pid" 2>/dev/null || :
+        fi
+    done
+    if [[ -n $foreground_pid && -t 0 ]]; then
+        python3 -I -c 'import os, signal, sys
+signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+try:
+    if os.tcgetpgrp(0) == int(sys.argv[1]): os.tcsetpgrp(0, os.getpgrp())
+except OSError: pass' "$foreground_pid"
+    fi
+    rm -rf -- "$RUN"
+}
+trap cleanup EXIT
+trap 'interrupted=1; [[ -z $child_pid ]] || kill -INT -- "-$child_pid" 2>/dev/null || :' INT
+trap 'shutdown_signal=TERM; exit 143' TERM
+trap 'shutdown_signal=HUP; exit 129' HUP
+if [[ -z ${CCSAVE_LOG:-} ]]; then CCSAVE_LOG=$(python3 -I "$D/ccsave.py" --default-log); fi
+export CCSAVE_LOG
+export CCSAVE_SAVED_FILE=${CCSAVE_SAVED_FILE:-"$CCSAVE_LOG.saved.json"}
+[[ $CCSAVE_SAVED_FILE = /* ]] || export CCSAVE_SAVED_FILE="$PWD/$CCSAVE_SAVED_FILE"
+export CCSAVE_PORT_FILE="$RUN/port"
+export CCSAVE_CLIENT_PID_FILE="$RUN/client"
+(umask 077; mkdir -p -- "$(dirname -- "$CCSAVE_LOG")" "$(dirname -- "$CCSAVE_SAVED_FILE")")
+(umask 077; exec python3 -I "$D/ccsave.py" --launcher < /dev/null) &
+proxy_pid=$!
+for ((i=0; i<100; i++)); do
+    [[ -s $CCSAVE_PORT_FILE ]] && break
+    if ! kill -0 "$proxy_pid" 2>/dev/null; then
+        echo "claude-solpi: proxy failed to start; see $CCSAVE_LOG.err" >&2
+        exit 1
+    fi
+    sleep 0.1
+done
+if [[ ! -s $CCSAVE_PORT_FILE ]]; then
+    echo "claude-solpi: timed out waiting for proxy port; see $CCSAVE_LOG.err" >&2
+    exit 1
+fi
+export ANTHROPIC_BASE_URL="http://127.0.0.1:$(cat "$CCSAVE_PORT_FILE")"
+# Explicit stdin redirection keeps the interactive terminal available to the background child.
+python3 -I -c 'import json, os, signal, sys
+parent_group = os.getpgrp()
+os.setpgid(0, 0)
+if os.isatty(0):
+    try:
+        if os.tcgetpgrp(0) == parent_group:
+            signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+            os.tcsetpgrp(0, os.getpgrp())
+            signal.signal(signal.SIGTTOU, signal.SIG_DFL)
+    except OSError:
+        pass
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+settings = json.dumps({"env": {"ANTHROPIC_BASE_URL": os.environ["ANTHROPIC_BASE_URL"]}})
+os.execvp("claude", ["claude", "--settings", settings, *sys.argv[1:]])' "$@" <&0 &
+child_pid=$!
+foreground_pid=$child_pid
+(umask 077; printf '%s\n' "$child_pid" > "$CCSAVE_CLIENT_PID_FILE.tmp")
+mv -- "$CCSAVE_CLIENT_PID_FILE.tmp" "$CCSAVE_CLIENT_PID_FILE"
+set +e
+while :; do
+    interrupted=0
+    wait "$child_pid"
+    status=$?
+    (( interrupted )) || break
+done
+child_pid=
+normal_exit=USR1
+exit "$status"

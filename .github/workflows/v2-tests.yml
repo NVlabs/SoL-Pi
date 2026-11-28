@@ -1,0 +1,37 @@
+name: v2 tests
+
+on:
+  pull_request:
+    paths:
+      - "v2/**"
+      - ".github/workflows/v2-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "v2/**"
+      - ".github/workflows/v2-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The suites use mocks and make no model calls.
+      - name: Pi extension
+        working-directory: v2/pi
+        run: node --test test/*.test.js
+      - name: Codex proxy
+        working-directory: v2/codex
+        run: python3 -m unittest discover -v
+      - name: Claude Code proxy
+        working-directory: v2/claude-code
+        run: python3 test_ccsave.py
